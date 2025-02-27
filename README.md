@@ -17,6 +17,8 @@ conda create -n liger python=3.10
 conda activate liger
 pip install -r requirements
 pip install flash-attn --no-build-isolation
+cd third_party/flash-linear-attention
+pip install -e .
 ```
 
 ## Linearization
@@ -31,6 +33,13 @@ sh scripts/train_liger.sh
 ```
 
 ## Evaluation
+
+You need to install [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) for evaluation:
+
+```
+cd third_party/lm-evaluation-harness
+pip install -e .
+```
 
 ```bash
 python -m eval.harness --model hf \

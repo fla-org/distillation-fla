@@ -13,24 +13,26 @@ import torch.utils.data.dataloader
 from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from transformers import Trainer, TrainingArguments
 from peft import LoraConfig, TaskType, PeftModel, get_peft_model
-from datasets import load_dataset
 
 from training.trainer import DefaultTrainer, FinetuneTrainer
 from training.utils import get_optimizer_and_scheduler, count_model_params
 from training.dataloader import load_data
 
 from liger.models.liger_gla import LigerGLAConfig
+from liger.models.liger_gsa import LigerGSAConfig
 
 def train(config):
 
     model_config = AutoConfig.from_pretrained(config.model.pretrained_model_name_or_path)
     if config.model.name == "liger_gla":
         liger_model_config = LigerGLAConfig()
-        liger_model_config.__dict__.update(model_config.__dict__)
-        model_config = liger_model_config
+    if config.model.name == "liger_gsa":
+        liger_model_config = LigerGSAConfig()
     else:
         raise NotImplementedError(config.model.name)
-
+    
+    liger_model_config.__dict__.update(model_config.__dict__)
+    model_config = liger_model_config
     model = AutoModelForCausalLM.from_pretrained(
         config.model.pretrained_model_name_or_path, 
         config=model_config, 
