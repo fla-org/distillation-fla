@@ -1,5 +1,8 @@
 # Liger: Linearizing Large Language Models to Gated Recurrent Structures
 
+[![arXiv](https://img.shields.io/badge/Arxiv-2503.01496-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2503.01496)
+[![huggingface weights](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Weights-ffc107?color=ffc107&logoColor=white)](https://huggingface.co/linear-moe-hub)
+
 ## Framework
 
 <p align="center">
@@ -62,6 +65,7 @@ If you find this repo useful, please cite and star our work:
 @article{lan2025liger,
   title={Liger: Linearizing Large Language Models to Gated Recurrent Structures},
   author={Lan, Disen and Sun, Weigao and Hu, Jiaxi and Du, Jusen and Cheng, Yu},
+  journal={arXiv preprint arXiv:2503.01496},
   year={2025}
 }
 ```
