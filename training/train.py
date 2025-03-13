@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import fla
+import liger
+import lolcats
 import torch.utils
 import torch.utils.data
 import torch.utils.data.dataloader
@@ -18,16 +20,26 @@ from training.trainer import DefaultTrainer, FinetuneTrainer
 from training.utils import get_optimizer_and_scheduler, count_model_params
 from training.dataloader import load_data
 
-from liger.models.liger_gla import LigerGLAConfig
-from liger.models.liger_gsa import LigerGSAConfig
 
 def train(config):
 
+    trainer = FinetuneTrainer
     model_config = AutoConfig.from_pretrained(config.model.pretrained_model_name_or_path)
     if config.model.name == "liger_gla":
+        from liger.models.liger_gla import LigerGLAConfig
         liger_model_config = LigerGLAConfig()
-    if config.model.name == "liger_gsa":
+    elif config.model.name == "liger_gsa":
+        from liger.models.liger_gsa import LigerGSAConfig
         liger_model_config = LigerGSAConfig()
+    elif config.model.name == "lolcats_at":
+        # first stage: attention transfer
+        from lolcats.models.lolcats import LolcatsConfig
+        liger_model_config = LolcatsConfig()
+        trainer = DefaultTrainer
+    elif config.model.name == "lolcats_ar":
+        # second stage
+        from lolcats.models.lolcats import LolcatsConfig
+        liger_model_config = LolcatsConfig()
     else:
         raise NotImplementedError(config.model.name)
     
@@ -48,8 +60,6 @@ def train(config):
     tokenizer = AutoTokenizer.from_pretrained(config.model.pretrained_model_name_or_path)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"  # Allow batched inference
-
-    trainer = FinetuneTrainer
 
     for name, param in model.named_parameters():
         param.requires_grad = False
@@ -72,6 +82,14 @@ def train(config):
         target_modules.append("self_attn.v_proj")
     if  "train_o" in config.train and config.train.train_o and config.train.train_o_lora:
         target_modules.append("self_attn.o_proj")
+    # lolcats attention transfer
+    if config.model.name == "lolcats_at":
+        for name, param in model.named_parameters():
+            if "feature_map" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+
     
     if len(target_modules) != 0:
         lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, r=8, target_modules=target_modules)

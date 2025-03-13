@@ -1,0 +1,24 @@
+data:
+  name: "alpaca_cleand"
+  path: "yahma/alpaca-cleaned"
+  batch_size: 8
+  micro_batch_size: 1
+  val_set_size: 200
+model:
+  name: 'lolcats_at'
+  pretrained_model_name_or_path: '/your/Liger/checkpoints/lolcats_base'  
+  max_length: 1024
+  # tokenizer
+  add_eos_token: False 
+  
+  device_map: 'auto' 
+train:
+  optim: 'adamw_torch'
+  lr: 0.01
+  epochs: 2
+  max_grad_norm: 1.0
+  output_dir: 'checkpoints'
+  train_qk: False
+  train_qk_lora: False
+  train_v: False
+  train_v_lora: False

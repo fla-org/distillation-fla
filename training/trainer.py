@@ -301,7 +301,7 @@ class DefaultTrainer():
 
         for layer_idx, attns in enumerate(outputs):
             if attns is not None:
-                loss_mse += self.criterion_mse(*attns)
+                loss_mse += self.criterion_mse(attns[0], attns[1])
                 n_layers += 1
 
         if n_layers > 0:
