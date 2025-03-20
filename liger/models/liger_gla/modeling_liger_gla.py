@@ -122,7 +122,7 @@ class LigerGatedLinearAttention(nn.Module):
         if self.training or q.shape[-2] > 1:
             o_, recurrent_state = fused_chunk_gla(q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True)
         else:
-            o_, recurrent_state = fused_recurrent_gla(q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True, offsets=offsets)
+            o_, recurrent_state = fused_recurrent_gla(q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True)
 
         if past_key_value is not None:
             past_key_value.update(
