@@ -5,8 +5,8 @@ data:
   micro_batch_size: 1
   val_set_size: 200
 model:
-  name: 'liger_hgrn2'
-  pretrained_model_name_or_path: '/your/Liger/checkpoints/liger_hgrn2_base'  
+  name: 'liger_mistral_gla'
+  pretrained_model_name_or_path: '/your/checkpoints/liger_mistral_gla_base'  
   max_length: 1024
   # tokenizer
   add_eos_token: False 
