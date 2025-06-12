@@ -77,7 +77,7 @@ class LigerGatedLinearAttention(nn.Module):
 
         self.pool_g = nn.AdaptiveAvgPool1d(
             output_size=self.head_dim * self.num_key_value_heads)
-        self.window_size = None
+        self.window_size = config.window_size
 
     def forward(
         self,
@@ -119,7 +119,6 @@ class LigerGatedLinearAttention(nn.Module):
                 max_seqlen = q.shape[1] + max(seqlen_offset)
 
         max_seqlen = max(max_seqlen, 4096)
-
         q = rearrange(q, 'b n (h d) -> b n h d', h=self.num_heads)
         k = rearrange(k, 'b n (h d) -> b n h d', h=self.num_key_value_heads)
         v = rearrange(v, 'b n (h d) -> b n h d', h=self.num_key_value_heads)
@@ -128,11 +127,6 @@ class LigerGatedLinearAttention(nn.Module):
         k = repeat(k, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
         v = repeat(v, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
         g = repeat(g, 'b n h m -> b n (h g) m', g=self.num_key_value_groups)
-        # breakpoint()
-
-        # k = repeat_kv(k, self.num_key_value_groups)
-        # v = repeat_kv(v, self.num_key_value_groups)
-        # g = repeat_kv(g, self.num_key_value_groups)
 
         sq, sk, sv = q, k, v
         # norm
@@ -147,8 +141,7 @@ class LigerGatedLinearAttention(nn.Module):
         scale = 1
         sq, sk = self.rotary(sq, sk, seqlen_offset=seqlen_offset,
                              max_seqlen=max_seqlen, cu_seqlens=None)
-        # if self.layer_idx == 0:
-        # breakpoint()
+
         if past_key_value is not None:
             cache_has_content = past_key_value.get_seq_length(
                 self.layer_idx) > 0
@@ -177,13 +170,11 @@ class LigerGatedLinearAttention(nn.Module):
             )
 
         q_len = hidden_states.size(1)
-        # Assuming this code is correct
-        # if self.layer_idx == 0:
-        # breakpoint()
 
         if attention_mask is not None:
             if self.window_size is not None:
-                attention_mask = attention_mask[:, -self.window_size:]
+                if sq.shape[1] == 1 and self.window_size is not None:
+                    attention_mask = attention_mask[:, -self.window_size:]
             sq, (sk, sv), indices_q, cu_seqlens, max_seq_lens = unpad_input(
                 sq, (sk, sv), attention_mask, q_len)
             cu_seqlens_q, cu_seqlens_k = cu_seqlens
