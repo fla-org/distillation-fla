@@ -5,6 +5,7 @@ from typing import Dict, Optional
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+
 class LigerGLAConfig(LlamaConfig, PretrainedConfig):
     model_type = 'liger_gla'
     keys_to_ignore_at_inference = ['past_key_values']
@@ -34,6 +35,7 @@ class LigerGLAConfig(LlamaConfig, PretrainedConfig):
         attention_dropout=0.0,
         mlp_bias=False,
         head_dim=None,
+        window_size=64,
         **kwargs,
     ):
         super().__init__(
@@ -59,5 +61,6 @@ class LigerGLAConfig(LlamaConfig, PretrainedConfig):
             attention_dropout=attention_dropout,
             mlp_bias=mlp_bias,
             head_dim=head_dim,
+            window_size=window_size,
             **kwargs,
         )
