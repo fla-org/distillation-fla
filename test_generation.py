@@ -28,7 +28,7 @@ from liger.models.liger_gla.modeling_liger_gla import LigerGLAConfig
 # ):
 config_class = LigerGLAConfig
 L = 2
-B = 1
+B = 10
 T = 512
 H = 8
 D = 64
@@ -48,16 +48,15 @@ chunk_size = T // num_chunks
 input_ids = torch.randint(
     low=0, high=config.vocab_size, size=(B, T)).to(device)
 attention_mask = torch.ones((B, T), dtype=torch.bool).to(device)
-# seq_start = torch.randint(low=1, high=chunk_size - 1, size=(B,))
-seq_start = torch.zeros(B, dtype=torch.long)
-# attention_mask[torch.arange(T) < seq_start[:, None]] = False
+seq_start = torch.randint(low=1, high=chunk_size - 1, size=(B,))
+# seq_start = torch.zeros(B, dtype=torch.long)
+attention_mask[torch.arange(T) < seq_start[:, None]] = False
 ref = torch.cat([
     model(input_ids=input_ids[i:i+1, start:], use_cache=False).logits
     for i, start in enumerate(seq_start)
 ], dim=1)
 
 logits = []
-
 out = model(
     input_ids=input_ids[:, :chunk_size],
     attention_mask=attention_mask[:, :chunk_size],

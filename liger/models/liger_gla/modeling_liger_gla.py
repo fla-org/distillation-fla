@@ -98,7 +98,6 @@ class LigerGatedLinearAttention(nn.Module):
             last_state = past_key_value[self.layer_idx]
 
         cu_seqlens = None  # placeholder
-
         q = self.q_proj(hidden_states)
         k = self.k_proj(hidden_states)
         v = self.v_proj(hidden_states)
@@ -129,7 +128,6 @@ class LigerGatedLinearAttention(nn.Module):
         g = repeat(g, 'b n h m -> b n (h g) m', g=self.num_key_value_groups)
 
         sq, sk, sv = q, k, v
-        # norm
         # fuse this.
         q = F.softmax(q.float(), dim=-1).to(v)
         k = F.softmax(k.float(), dim=-1).to(v)
@@ -155,9 +153,19 @@ class LigerGatedLinearAttention(nn.Module):
                 sk, sv = k_cached, v_cached
                 sk = rearrange(sk, '... (h d) -> ... h d', d=self.head_dim)
                 sv = rearrange(sv, '... (h d) -> ... h d', d=self.head_dim)
-        if self.training or q.shape[-2] > 1:
-            o_, recurrent_state = chunk_gla(
-                q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True)
+
+        if self.training or q.shape[1] > 1:
+            if attention_mask is not None:
+                q, (k, v, g), indices_q, cu_seqlens_rnns, max_seq_lens = unpad_input(
+                    q, (k, v, g), attention_mask, q_len)
+                o_, recurrent_state = chunk_gla(
+                    q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0), g.unsqueeze(0), scale=scale, initial_state=recurrent_state, output_final_state=True,
+                    cu_seqlens=cu_seqlens_rnns[0]
+                )
+                o_ = pad_input(o_.squeeze(0), indices_q, batch_size, q_len)
+            else:
+                o_, recurrent_state = chunk_gla(
+                    q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True)
         else:
             o_, recurrent_state = fused_recurrent_gla(
                 q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True)
