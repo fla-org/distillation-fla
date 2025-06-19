@@ -1,29 +1,16 @@
-import sys
 import os
+import sys
+
 import pandas as pd
-
-from tqdm import tqdm
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-
-import sys
-import os
-import pandas as pd
-
-from tqdm import tqdm
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-
-from transformers import AutoModel, AutoModelForCausalLM
-from transformers import Trainer, TrainingArguments
-
 from peft import PeftModel
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import (AutoModel, AutoModelForCausalLM, Trainer,
+                          TrainingArguments)
+
 
 class DefaultTrainer():
     # code is modified from: https://github.com/HazyResearch/lolcats/blob/main/src/trainer/default_lm.py
@@ -55,7 +42,8 @@ class DefaultTrainer():
         self.gradient_accumulation_steps = self.args.gradient_accumulation_steps
         self.evaluation_strategy = self.args.evaluation_strategy
         self.greater_is_better = self.args.greater_is_better
-        self.is_better = (lambda x, y: x > y if self.args.greater_is_better else x < y)
+        self.is_better = (
+            lambda x, y: x > y if self.args.greater_is_better else x < y)
         self.load_best_model_at_end = self.args.load_best_model_at_end
         self.logging_steps = self.args.logging_steps
         self.max_steps = self.args.max_steps
@@ -67,20 +55,20 @@ class DefaultTrainer():
         self.max_eval_batches = max_eval_batches
         self.print_samples = print_samples
         self.initial_eval = initial_eval
-        self.save_total_limit = self.args.save_total_limit 
-        self.save_steps = self.args.save_steps # num_save_ckpt_steps
+        self.save_total_limit = self.args.save_total_limit
+        self.save_steps = self.args.save_steps  # num_save_ckpt_steps
 
         # Saving metrics
-        self.train_metrics = {'train/loss': None, 
-                              'train/epoch': None, 
+        self.train_metrics = {'train/loss': None,
+                              'train/epoch': None,
                               'train/step': None}
         self.eval_metrics = {self.metric_for_best_model: None}
         self.eval_metrics_by_step = {'eval_step': []}  # save all eval metrics
         self.criterion = nn.CrossEntropyLoss(reduction='mean')
-            
+
         save_results = True
         save_checkpoints = True
-        
+
         self.save_results = save_results
         self.results_path = None
         self.best_val_metric = 0 if self.greater_is_better else 1e10
@@ -94,7 +82,8 @@ class DefaultTrainer():
         Entire training run
         """
         model = self.model
-        pbar = tqdm(range(self.num_train_epochs), leave=False, colour='white', desc='Training')
+        pbar = tqdm(range(self.num_train_epochs), leave=False,
+                    colour='white', desc='Training')
         for ix, epoch in enumerate(pbar):
             model, early_stopping = self.train_step(model, epoch)
             if self.evaluation_strategy == 'epoch':
@@ -102,16 +91,17 @@ class DefaultTrainer():
                 print(f'Epoch {ix} metrics:', _eval_metrics)
             if early_stopping:
                 break
-                
+
         if self.load_best_model_at_end:  # Return best checkpoint
             try:
                 model.from_pretrained(self.best_val_checkpoint_path)
-                print(f'-> Loading best checkpoint from {self.best_val_checkpoint_path}')
+                print(
+                    f'-> Loading best checkpoint from {self.best_val_checkpoint_path}')
             except FileNotFoundError as e:
                 print(e)
                 print('-> Returning most recent model instead')
-        return model            
-    
+        return model
+
     def train_step(self, model, epoch) -> nn.Module:
         if self.gradient_accumulation_steps is None:
             accum_iter = 1
@@ -119,8 +109,9 @@ class DefaultTrainer():
             accum_iter = self.gradient_accumulation_steps
 
         model.train()
-        model.zero_grad()        
-        pbar = tqdm(self.train_loader, leave=False, colour='blue', desc=f'-> Training (epoch {epoch} / {self.args.num_train_epochs})')
+        model.zero_grad()
+        pbar = tqdm(self.train_loader, leave=False, colour='blue',
+                    desc=f'-> Training (epoch {epoch} / {self.args.num_train_epochs})')
         total_loss = 0
         eval_for_step = False
 
@@ -129,18 +120,15 @@ class DefaultTrainer():
             print('')
             print('-> Initial eval')
             self.compute_eval_metrics(model, step=self.grad_step)
-        
+
         # model.to(self.device)
         for ix, data in enumerate(pbar):
-            loss, train_metrics = self.compute_loss(model, data, return_outputs=True)
+            loss, train_metrics = self.compute_loss(
+                model, data, return_outputs=True)
             loss /= accum_iter
             if not self.compute_loss_backprop:
                 # loss.backward() did not occur in compute_loss
-                try:
-                    with torch.autograd.set_detect_anomaly(True):
-                        loss.backward()
-                except Exception as e:
-                    breakpoint()
+                loss.backward()
             if (self.step + 1) % accum_iter == 0:  # and self.step != 0:
                 self.optimizer.step()
                 if not self.scheduler_step_after_epoch and self.scheduler is not None:
@@ -149,7 +137,7 @@ class DefaultTrainer():
                 self.grad_step += 1
                 if not self.compute_loss_backprop:
                     loss = loss.detach().cpu().item()
-            
+
             self.step += 1
             if not isinstance(loss, float):
                 total_loss += loss.item()
@@ -163,28 +151,31 @@ class DefaultTrainer():
 
             # Logging
             if (self.grad_step) % (self.logging_steps):
-                self.train_metrics['train/loss'] = loss.item() if not isinstance(loss, float) else loss
+                self.train_metrics['train/loss'] = loss.item(
+                ) if not isinstance(loss, float) else loss
                 self.train_metrics['train/epoch'] = epoch
                 self.train_metrics['train/step'] = self.grad_step
                 self.train_metrics['train/lr'] = self.optimizer.param_groups[0]['lr']
                 for k, v in train_metrics.items():
                     self.train_metrics[f'train/{k}'] = v
-                
+
                 if self.wandb is not None:
                     self.wandb.log(self.train_metrics, step=self.grad_step)
 
             if self.evaluation_strategy == 'steps':
                 if (self.grad_step % self.eval_steps == 0 and self.grad_step > 0 and not eval_for_step):
                     _eval_metrics = self.eval_step(model, step=self.grad_step)
-                    print(f'Grad Step {self.grad_step} eval metrics:', _eval_metrics)
+                    print(
+                        f'Grad Step {self.grad_step} eval metrics:', _eval_metrics)
                     eval_for_step = True
                     model.train()  # Need to set back to train mode
                 elif self.grad_step == 0 and self.save_steps < 1000 and not eval_for_step:  # hack for micros
                     _eval_metrics = self.eval_step(model, step=self.grad_step)
-                    print(f'Grad Step {self.grad_step} eval metrics:', _eval_metrics)
+                    print(
+                        f'Grad Step {self.grad_step} eval metrics:', _eval_metrics)
                     eval_for_step = True
                     model.train()  # Need to set back to train mode
-                    
+
                 elif self.grad_step % self.eval_steps == 0 and self.grad_step > 0 and eval_for_step:
                     pass
                 else:
@@ -193,17 +184,17 @@ class DefaultTrainer():
             if self.grad_step == self.max_steps:
                 early_stopping = True
                 return model, early_stopping
-        
+
         early_stopping = False
         return model, early_stopping
 
-    
     def eval_step(self, model: nn.Module, step: int = None, **kwargs: any) -> dict[any]:
         """
         Evaluation loop over one epoch
         """
         with torch.no_grad():
-            self.eval_metrics = self.compute_eval_metrics(model, step=step, **kwargs)
+            self.eval_metrics = self.compute_eval_metrics(
+                model, step=step, **kwargs)
             val_metric = self.eval_metrics[self.metric_for_best_model]
 
             # Save results
@@ -218,7 +209,8 @@ class DefaultTrainer():
                     else:
                         self.eval_metrics_by_step[k].append(v)
                 # Inefficient, but log for experiments results
-                pd.DataFrame(self.eval_metrics_by_step).to_csv(self.results_path)
+                pd.DataFrame(self.eval_metrics_by_step).to_csv(
+                    self.results_path)
 
             # Save best metric and checkpoint
             if self.grad_step % self.eval_steps == 0 and step > 0:
@@ -239,29 +231,32 @@ class DefaultTrainer():
                 model.save_pretrained(save_path)
                 self.tokenizer.save_pretrained(save_path)
                 print(f'\n-> Saved model checkpoint to: {save_path}!')
-            
+
             if self.scheduler_step_after_epoch and self.scheduler is not None:
                 self.scheduler.step(val_metric)
             return self.eval_metrics
 
-    def compute_eval_metrics(self, 
-                            model: nn.Module, step: int,
-                            max_batches: int = None,
-                            dataloader: DataLoader = None,
-                            **kwargs: any) -> dict[any]:
+    def compute_eval_metrics(self,
+                             model: nn.Module, step: int,
+                             max_batches: int = None,
+                             dataloader: DataLoader = None,
+                             **kwargs: any) -> dict[any]:
         """
         One evaluation loop over a validation dataset
         """
-        max_batches = (self.max_eval_batches if max_batches is None else max_batches)
+        max_batches = (
+            self.max_eval_batches if max_batches is None else max_batches)
         dataloader = self.eval_loader if dataloader is None else dataloader
-        pbar = tqdm(dataloader, leave=False, colour='green', desc=f'Evaluating at step {step}')
+        pbar = tqdm(dataloader, leave=False, colour='green',
+                    desc=f'Evaluating at step {step}')
 
         model.eval()
         step_loss = 0
         step_eval_metrics = {}
         with torch.no_grad():
             for ix, data in enumerate(pbar):
-                loss, eval_metrics = self.compute_loss(model, data, return_outputs=True)
+                loss, eval_metrics = self.compute_loss(
+                    model, data, return_outputs=True)
                 if not self.compute_loss_backprop:
                     loss = loss.item()  # otherwise already float
                 if ix == 0:
@@ -272,7 +267,7 @@ class DefaultTrainer():
                     step_eval_metrics[self.metric_for_best_model].append(loss)
                     for k, v in eval_metrics.items():
                         step_eval_metrics[f'eval/{k}'].append(v)
-                        
+
                 step_loss += loss
                 desc = f"Evaluating at step {step} | loss: {step_loss / (ix + 1):.3f}"
                 if self.optimizer is not None:
@@ -290,10 +285,12 @@ class DefaultTrainer():
         return step_eval_metrics
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        inputs = {k: v.to(model.device) for k, v in inputs.items() if k != 'labels'}
+        inputs = {k: v.to(model.device)
+                  for k, v in inputs.items() if k != 'labels'}
         outputs = model(**inputs, output_attentions=True)
-        
-        outputs = outputs.attentions # tuple [num_decoder_layers, 2, B, H, L, L]
+
+        # tuple [num_decoder_layers, 2, B, H, L, L]
+        outputs = outputs.attentions
         loss_mse = 0
         self.mse_factor = 1000
         self.criterion_mse = nn.MSELoss(reduction='mean')
@@ -307,9 +304,9 @@ class DefaultTrainer():
         if n_layers > 0:
             loss_mse = loss_mse / n_layers * self.mse_factor
         loss = loss_mse
-        outputs = {'loss_mse': loss_mse.item() if self.mse_factor > 0 else 0, 
+        outputs = {'loss_mse': loss_mse.item() if self.mse_factor > 0 else 0,
                    'mse_factor': self.mse_factor}
-        
+
         return (loss, outputs) if return_outputs else loss
 
     def init_checkpointing(self, config) -> None:
@@ -328,14 +325,17 @@ class DefaultTrainer():
             if 'eval' not in self.metric_for_best_model:
                 self.metric_for_best_model = f'eval/{self.metric_for_best_model}'
 
+
 class FinetuneTrainer(DefaultTrainer):
     def __init__(self, model, train_loader, eval_loader, args, optimizers, tokenizer, config):
-        super().__init__(model, train_loader, eval_loader, args, optimizers, tokenizer, config)
+        super().__init__(model, train_loader, eval_loader,
+                         args, optimizers, tokenizer, config)
         self.type = 'finetune'
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         input_keys = {'input_ids', 'attention_mask'}
-        data = {k: v.to(model.device) for k, v in inputs.items() if k in input_keys}  
+        data = {k: v.to(model.device)
+                for k, v in inputs.items() if k in input_keys}
         outputs = model(**data, output_attentions=False)
         outputs = outputs.get('logits')[..., :-1, :].contiguous()
         targets = inputs.get('labels')[..., 1:].contiguous()
@@ -343,9 +343,9 @@ class FinetuneTrainer(DefaultTrainer):
         outputs = outputs.view(-1, outputs.shape[-1])
         targets = targets.view(-1).to(outputs.device)
         loss = self.criterion(outputs, targets)
-        
+
         targets = targets.cpu()
         outputs = outputs.cpu()
-        outputs = {'ppl': torch.exp(loss).item(), 'seq_len': targets.shape[-1] + 1}
+        outputs = {'ppl': torch.exp(loss).item(),
+                   'seq_len': targets.shape[-1] + 1}
         return (loss, outputs) if return_outputs else loss
-    
