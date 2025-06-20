@@ -44,6 +44,10 @@ def train(config):
         from lolcats.models.liger_qwen2_gla import LigerQwen2GLAConfig
         liger_model_config = LigerQwen2GLAConfig()
         trainer = DefaultTrainer
+    elif config.model.name == "liger_llama3_8b_gla_lolcats":
+        from lolcats.models.liger_llama3_8b_gla import LigerLlama3GLAConfig
+        liger_model_config = LigerLlama3GLAConfig()
+        trainer = DefaultTrainer
     else:
         raise NotImplementedError(config.model.name)
 
