@@ -12,6 +12,7 @@ import torch.utils.data.dataloader
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from transformers import (AutoConfig, AutoModel, AutoModelForCausalLM,
                           AutoTokenizer, Trainer, TrainingArguments)
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import liger
 import lolcats
@@ -47,6 +48,10 @@ def train(config):
     elif config.model.name == "liger_llama3_8b_gla_lolcats":
         from lolcats.models.liger_llama3_8b_gla import LigerLlama3GLAConfig
         liger_model_config = LigerLlama3GLAConfig()
+        trainer = DefaultTrainer
+    elif config.model.name == "rapid_distill_stage_1_qwen":
+        from lolcats.models.rapid_distill_stage_1_qwen import LigerQwen2GLAConfig
+        liger_model_config = LigerQwen2GLAConfig()
         trainer = DefaultTrainer
     else:
         raise NotImplementedError(config.model.name)
@@ -121,6 +126,22 @@ def train(config):
 
     print("Building trainer...")
 
+    batch_size = config.data.batch_size
+    seq_len = config.model.max_length
+    target_tokens = getattr(config.train, "target_tokens", None)
+    max_steps = getattr(config.train, "max_steps", None)
+
+    # Calculate steps if target_tokens specified
+    if target_tokens is not None:
+        # floor division, always at least 1
+        total_steps = max(1, int(target_tokens) // (batch_size * seq_len))
+        print(f"[INFO] Calculated total_steps = {total_steps} for target_tokens={target_tokens}")
+    else:
+        total_steps = max_steps
+
+    if (target_tokens is not None) and (max_steps is not None):
+        print("[WARNING] target_tokens is set, overriding max_steps!")
+
     training_args = TrainingArguments(
         per_device_train_batch_size=config.data.micro_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -139,6 +160,7 @@ def train(config):
         output_dir=config.train.output_dir,
         save_total_limit=3,
         load_best_model_at_end=True if config.data.val_set_size > 0 else False,
+        lr_scheduler_type=config.train.lr_scheduler_type,
         # default trainer args
         greater_is_better=False,
         metric_for_best_model='eval/loss',
@@ -153,6 +175,7 @@ def train(config):
         args=training_args,
         optimizers=get_optimizer_and_scheduler(model, config),
         tokenizer=tokenizer,
+        max_steps=total_steps,
         config=config
     )
 

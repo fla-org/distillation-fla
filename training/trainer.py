@@ -10,11 +10,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (AutoModel, AutoModelForCausalLM, Trainer,
                           TrainingArguments)
+from itertools import cycle
 
 
 class DefaultTrainer():
     # code is modified from: https://github.com/HazyResearch/lolcats/blob/main/src/trainer/default_lm.py
-    def __init__(self, model, train_loader, eval_loader, args, optimizers, tokenizer, config):
+    def __init__(self, model, train_loader, eval_loader, args, optimizers, tokenizer, max_steps, config):
         super().__init__()
         self.model = model
         self.args = args
@@ -46,7 +47,7 @@ class DefaultTrainer():
             lambda x, y: x > y if self.args.greater_is_better else x < y)
         self.load_best_model_at_end = self.args.load_best_model_at_end
         self.logging_steps = self.args.logging_steps
-        self.max_steps = self.args.max_steps
+        self.max_steps = max_steps
         self.eval_steps = self.args.eval_steps
 
         max_eval_batches = -1
@@ -82,15 +83,23 @@ class DefaultTrainer():
         Entire training run
         """
         model = self.model
-        pbar = tqdm(range(self.num_train_epochs), leave=False,
-                    colour='white', desc='Training')
-        for ix, epoch in enumerate(pbar):
+        # pbar = tqdm(range(self.num_train_epochs), leave=False,
+        #             colour='white', desc='Training')
+        # for ix, epoch in enumerate(pbar):
+        epoch = 0
+        while self.grad_step < self.max_steps:
+            if self.grad_step % 100 == 0:
+                torch.cuda.empty_cache()
+
             model, early_stopping = self.train_step(model, epoch)
             if self.evaluation_strategy == 'epoch':
                 _eval_metrics = self.eval_step(model, step=self.grad_step)
                 print(f'Epoch {ix} metrics:', _eval_metrics)
             if early_stopping:
                 break
+            epoch += 1
+
+        # self.load_best_model_at_end = False
 
         if self.load_best_model_at_end:  # Return best checkpoint
             try:
@@ -122,7 +131,10 @@ class DefaultTrainer():
             self.compute_eval_metrics(model, step=self.grad_step)
 
         # model.to(self.device)
+        # for ix, data in enumerate(pbar):
         for ix, data in enumerate(pbar):
+            if self.grad_step >= self.max_steps:
+                break
             loss, train_metrics = self.compute_loss(
                 model, data, return_outputs=True)
             loss /= accum_iter
@@ -292,7 +304,7 @@ class DefaultTrainer():
         # tuple [num_decoder_layers, 2, B, H, L, L]
         outputs = outputs.attentions
         loss_mse = 0
-        self.mse_factor = 1000
+        self.mse_factor = 1
         self.criterion_mse = nn.MSELoss(reduction='mean')
         n_layers = 0  # Number of layers to distill
 
