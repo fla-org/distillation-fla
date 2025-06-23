@@ -12,7 +12,6 @@ import torch.utils.data.dataloader
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from transformers import (AutoConfig, AutoModel, AutoModelForCausalLM,
                           AutoTokenizer, Trainer, TrainingArguments)
-from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import liger
 import lolcats
@@ -160,12 +159,11 @@ def train(config):
         output_dir=config.train.output_dir,
         save_total_limit=3,
         load_best_model_at_end=True if config.data.val_set_size > 0 else False,
-        lr_scheduler_type=config.train.lr_scheduler_type,
         # default trainer args
         greater_is_better=False,
         metric_for_best_model='eval/loss',
         # wandb
-        report_to="none"  # wandb off "wandb"
+        report_to="wandb"  # wandb off "wandb"
     )
 
     trainer = trainer(
@@ -173,7 +171,7 @@ def train(config):
         train_loader=train_loader,
         eval_loader=eval_loader,
         args=training_args,
-        optimizers=get_optimizer_and_scheduler(model, config),
+        optimizers=get_optimizer_and_scheduler(model, config, total_steps),
         tokenizer=tokenizer,
         max_steps=total_steps,
         config=config

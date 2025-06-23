@@ -1,16 +1,19 @@
 import numpy as np
 import torch
 import torch.optim
+from transformers import get_scheduler
+import math
+from torch.optim.lr_scheduler import LambdaLR
 
-def get_optimizer_and_scheduler(model, config):
+
+def get_optimizer_and_scheduler(model, config, total_steps):
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr, fused=True)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer=optimizer, 
-        mode='min',
-        factor=0.1,
-        patience=10,
-        min_lr=0.00001
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr, betas=(0.9, 0.95), fused=True)
+    scheduler = get_scheduler(
+        'cosine',
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=total_steps,
     )
     return optimizer, scheduler
 
