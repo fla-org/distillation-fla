@@ -10,7 +10,7 @@ model:
   max_length: 512
   # tokenizer
   add_eos_token: False
-  device_map: 'auto'
+  # device_map: 'auto'
 
 train:
   target_tokens: 100_000_000
