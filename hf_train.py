@@ -6,6 +6,7 @@ from hf_trainer import DistillTrainer, FinetuneTrainer         # NEW
 from training.dataloader import load_data
 from training.utils import count_model_params, get_optimizer_and_scheduler
 from omegaconf import OmegaConf
+from hf_trainer import KDTrainer
 
 def parse_config(path: str):
     with open(path) as f: return yaml.safe_load(f)
