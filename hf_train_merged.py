@@ -4,13 +4,6 @@ import deepspeed
 from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
                           TrainingArguments)
 from omegaconf import OmegaConf
-
-# If you have separate modules:
-# from training.dataloader import load_data
-# from training.utils import count_model_params, get_optimizer_and_scheduler
-# from hf_trainer import DistillTrainer, FinetuneTrainer, KDTrainer
-#
-# Make sure these imports match your project’s layout.
 from training.dataloader import load_data
 from training.utils import count_model_params, get_optimizer_and_scheduler
 from hf_trainer import DistillTrainer, FinetuneTrainer, KDTrainer
@@ -159,90 +152,6 @@ def build_student_for_stage2(cfg):
     return model
 
 
-# import gc # Make sure to import the garbage collector at the top of your file
-
-# def build_student_for_stage2(cfg):
-#     """
-#     Build the stage 2 student by loading the checkpoint from stage 1,
-#     then destroying the redundant teacher weights to save memory.
-#     """
-#     # ... (code to determine model_config) ...
-#     base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
-#     if cfg.model.name.startswith("rapid_distill_stage"):
-#         from lolcats.models.rapid_distill_stage_1_qwen import LigerQwen2GLAConfig as LC
-#         lg_cfg = LC()
-#         lg_cfg.__dict__.update(base_cfg.__dict__)
-#         model_config = lg_cfg
-#     else:
-#         model_config = base_cfg
-        
-#     student_stage1_path = cfg.train.student_init_ckpt
-
-#     print(f"Loading Stage 1 student from: {student_stage1_path}")
-#     model = AutoModelForCausalLM.from_pretrained(
-#         student_stage1_path,
-#         config=model_config,
-#         torch_dtype=torch.bfloat16
-#     )
-
-#     # ========================================================================
-#     # COMPLETE VERIFICATION BLOCK
-#     # ========================================================================
-#     print("\n" + "="*60)
-#     print("VERIFICATION: Checking model state BEFORE destroying teacher weights...")
-    
-#     # 1. Get initial parameter count
-#     tot_before = count_model_params(model, False)
-#     print(f"[Before] Total parameters: {tot_before/1e6:,.1f}M")
-
-#     # 2. Check for the existence of a teacher weight attribute
-#     q_proj_before = model.model.layers[0].self_attn.q_proj
-#     print(f"[Before] `q_proj` attribute is a module: {isinstance(q_proj_before, torch.nn.Module)}")
-
-#     # --- The Destruction Step ---
-#     if hasattr(model, "destroy_teacher_weights"):
-#         print("\nAttempting to destroy teacher weights...")
-#         model.destroy_teacher_weights()
-#         # Force garbage collection to reclaim memory
-#         gc.collect()
-#         if torch.cuda.is_available():
-#             torch.cuda.empty_cache()
-#     # --------------------------
-
-#     print("\nVERIFICATION: Checking model state AFTER destroying teacher weights...")
-
-#     # 1. Get final parameter count and compare
-#     tot_after = count_model_params(model, False)
-#     print(f"[After]  Total parameters: {tot_after/1e6:,.1f}M")
-#     print(f"--> Reduction of {(tot_before - tot_after) / 1e6:,.1f}M parameters.")
-
-#     # 2. Assert the weight is now None
-#     q_proj_after = model.model.layers[0].self_attn.q_proj
-#     if q_proj_after is None:
-#         print("✅ [After]  `q_proj` attribute is now None. Verification successful.")
-#     else:
-#         print("❌ [After]  `q_proj` attribute still exists. Verification FAILED.")
-
-#     # 3. Check final GPU memory
-#     if torch.cuda.is_available() and cfg.local_rank == 0:
-#         torch.cuda.synchronize()
-#         mem_after = torch.cuda.memory_allocated() / 1024**2
-#         print(f"[After]  GPU Memory Allocated on Rank 0: {mem_after:,.2f} MB")
-#         print(f"--> GPU memory freed: {mem_before - mem_after:,.2f} MB.")
-    
-#     print("="*60 + "\n")
-#     # ========================================================================
-#     # END OF VERIFICATION BLOCK
-#     # ========================================================================
-
-#     # For Stage 2, all parameters of the student should be trainable.
-#     for name, p in model.named_parameters():
-#         p.requires_grad = True
-
-#     tr, tot = count_model_params(model, True), count_model_params(model, False)
-#     print(f"[Stage 2] Purified Student: Trainable = {tr/1e6:.1f}M | Total = {tot/1e6:.1f}M ({tr/tot:.2%})")
-#     return model
-
 def build_teacher_for_stage2(cfg):
     """
     Teacher is the base model with full attention. If you want to
@@ -262,6 +171,46 @@ def build_teacher_for_stage2(cfg):
         teacher_model = _prepare_teacher_deepspeed(teacher_model, teacher_ds_cfg)
 
     return teacher_model
+
+
+def build_model_for_stage3(cfg):
+    """
+    Build the student for Stage 3 by loading the final checkpoint from Stage 2.
+    This model is already purified and ready for fine-tuning.
+    """
+    stage2_ckpt_path = cfg.train.student_init_ckpt
+    print(f"Loading Stage 2 model from: {stage2_ckpt_path}")
+
+    base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
+
+    from lolcats.models.rapid_distill_stage_1_qwen import LigerQwen2GLAConfig as LC
+    lg_cfg = LC()
+    lg_cfg.__dict__.update(base_cfg.__dict__)
+    model_config = lg_cfg
+
+    model = AutoModelForCausalLM.from_pretrained(
+        stage2_ckpt_path,
+        config=model_config, # Use the CORRECT (custom) config
+        torch_dtype=torch.bfloat16
+    )
+
+    # For Stage 3, all parameters should be trainable for fine-tuning.
+    for name, p in model.named_parameters():
+        p.requires_grad = True
+
+    tr, tot = count_model_params(model, True), count_model_params(model, False)
+    print(f"[Stage 3] Model Ready for Finetuning: Trainable = {tr/1e6:.1f}M | Total = {tot/1e6:.1f}M ({tr/tot:.2%})")
+    
+    # # Optional: Verify that the weights are no longer unused.
+    # # The warning should disappear, but you can also manually check a parameter.
+    # try:
+    #     # This should now exist and not be None
+    #     _ = model.model.layers[0].self_attn.q_proj_s
+    #     print("✅ Verification successful: `q_proj_s` layer exists in the loaded model.")
+    # except AttributeError:
+    #     print("❌ Verification FAILED: `q_proj_s` layer not found.")
+
+    return model
 
 
 def main(cfg, measure_memory=False):
@@ -299,8 +248,20 @@ def main(cfg, measure_memory=False):
             measure_gpu_memory(model, "Stage 2 Student")
             # For DeepSpeed-sharded teacher, this will measure the shard on the current device
             measure_gpu_memory(teacher_model, "Teacher Model")
+
+    elif stage == 3:
+        print("==== Stage 3 (Long-Context Finetuning) ====")
+        # Student is the checkpoint saved by stage 2
+        model = build_model_for_stage3(cfg)
+        # No teacher model in stage 3
+        teacher_model = None
+        # Use the standard fine-tuning trainer
+        trainer_class = FinetuneTrainer
+        if measure_memory:
+            measure_gpu_memory(model, "Stage 3 Model")
+
     else:
-        raise ValueError(f"Unknown stage: {stage}. Must be 1 or 2.")
+        raise ValueError(f"Unknown stage: {stage}. Must be 1, 2, or 3.")
 
     # 2. Build the dataloaders
     dataloaders = load_data(cfg)
@@ -342,33 +303,55 @@ def main(cfg, measure_memory=False):
     # 5. Optimizer & scheduler
     optim, sched = get_optimizer_and_scheduler(model, cfg, max_steps)
 
-    # 6. Instantiate the trainer
+    trainer_kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": train_loader.dataset,
+        "eval_dataset": eval_loader.dataset if cfg.data.val_set_size > 0 else None,
+        "data_collator": train_loader.collate_fn,
+        "optimizers": (optim, sched),
+        "tokenizer": tokenizer,
+    }
+
     if stage == 1:
-        # Stage 1 trainer
-        trainer = trainer_class(
-            model          = model,
-            args           = training_args,
-            train_dataset  = train_loader.dataset,
-            eval_dataset   = eval_loader.dataset if cfg.data.val_set_size > 0 else None,
-            data_collator  = train_loader.collate_fn,
-            optimizers     = (optim, sched),
-            tokenizer      = tokenizer,
-            mse_factor     = 1.0,  # if DistillTrainer needs it
-        )
-    else:
-        # Stage 2 trainer
-        trainer = trainer_class(
-            model          = model,
-            teacher_model  = teacher_model,
-            kl_weight      = cfg.distillation.kl_weight,
-            ce_weight      = cfg.distillation.ce_weight,
-            args           = training_args,
-            train_dataset  = train_loader.dataset,
-            eval_dataset   = eval_loader.dataset if cfg.data.val_set_size > 0 else None,
-            data_collator  = train_loader.collate_fn,
-            optimizers     = (optim, sched),
-            tokenizer      = tokenizer,
-        )
+        trainer_kwargs["mse_factor"] = 1.0 # Or from cfg
+        trainer = DistillTrainer(**trainer_kwargs)
+    elif stage == 2:
+        trainer_kwargs["teacher_model"] = teacher_model
+        trainer_kwargs["kl_weight"] = cfg.distillation.kl_weight
+        trainer_kwargs["ce_weight"] = cfg.distillation.ce_weight
+        trainer = KDTrainer(**trainer_kwargs)
+    elif stage == 3:
+        # FinetuneTrainer takes no extra args from this list
+        trainer = FinetuneTrainer(**trainer_kwargs)
+
+    # # 6. Instantiate the trainer
+    # if stage == 1:
+    #     # Stage 1 trainer
+    #     trainer = trainer_class(
+    #         model          = model,
+    #         args           = training_args,
+    #         train_dataset  = train_loader.dataset,
+    #         eval_dataset   = eval_loader.dataset if cfg.data.val_set_size > 0 else None,
+    #         data_collator  = train_loader.collate_fn,
+    #         optimizers     = (optim, sched),
+    #         tokenizer      = tokenizer,
+    #         mse_factor     = 1.0,  # if DistillTrainer needs it
+    #     )
+    # else:
+    #     # Stage 2 trainer
+    #     trainer = trainer_class(
+    #         model          = model,
+    #         teacher_model  = teacher_model,
+    #         kl_weight      = cfg.distillation.kl_weight,
+    #         ce_weight      = cfg.distillation.ce_weight,
+    #         args           = training_args,
+    #         train_dataset  = train_loader.dataset,
+    #         eval_dataset   = eval_loader.dataset if cfg.data.val_set_size > 0 else None,
+    #         data_collator  = train_loader.collate_fn,
+    #         optimizers     = (optim, sched),
+    #         tokenizer      = tokenizer,
+    #     )
 
     # 7. Train
     trainer.train(resume_from_checkpoint=None)

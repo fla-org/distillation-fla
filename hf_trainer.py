@@ -119,7 +119,8 @@ class KDTrainer(Trainer):
 
         # KL divergence
         # F.kl_div takes log-probabilities as first argument
-        # TODO: change to this https://github.com/fla-org/flash-linear-attention/blob/main/fla/modules/fused_kl_div.py
+        # TODO: change to this https://github.com/fla-org/flash-linear-attention/blob/main/fla/modules/fused_kl_div.py\
+
         kl_loss = F.kl_div(
             F.log_softmax(student_logits, dim=-1),
             F.softmax(teacher_logits, dim=-1),
