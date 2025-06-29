@@ -61,7 +61,7 @@ def main(cfg):
         logging_steps               = 10,
         evaluation_strategy         = "steps" if cfg.data.val_set_size > 0 else "no",
         eval_steps                  = 200,
-        save_steps                  = 1000,
+        save_steps                  = 200,
         save_total_limit            = 3,
         metric_for_best_model       = "loss",
         greater_is_better           = False,

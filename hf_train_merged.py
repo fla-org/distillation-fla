@@ -138,6 +138,7 @@ def build_student_for_stage2(cfg):
         config=model_config, # Use the custom config
         torch_dtype=torch.bfloat16
     )
+    print(f"[DEBUG] Model loaded in training script is of type: {type(model)}")
 
     # After loading, purify the model by destroying the unneeded teacher weights!!!!
     if hasattr(model, "destroy_teacher_weights"):
@@ -237,12 +238,126 @@ def main(cfg, measure_memory=False):
             measure_gpu_memory(model, "Stage 1 Student")
 
     elif stage == 2:
+        import torch.nn.functional as F
         print("==== Stage 2 (Logit Distillation) ====")
         # Student: from the checkpoint saved by stage 1
         model = build_student_for_stage2(cfg)
         # Teacher: base model with full attention
         teacher_model = build_teacher_for_stage2(cfg)
         trainer_class = KDTrainer
+
+
+        # ---> START DEBUG BLOCK <---
+        print("\n[DEBUG] Pre‑flight check: per‑layer hidden‑state L2 loss")
+
+        import torch.nn.functional as F
+        model.eval()
+        teacher_model.eval()
+
+        # Move to GPU (or keep on CPU if that is what you use)
+        model.to("cuda")
+        teacher_model.to("cuda")
+
+        # 1. Get one mini‑batch
+        data_loader = load_data(cfg)["train"]
+        single_batch = next(iter(data_loader))
+        single_batch = {k: v.to("cuda") for k, v in single_batch.items()
+                        if isinstance(v, torch.Tensor)}
+
+        # 2. Forward passes with hidden states
+        with torch.no_grad():
+            # DeepSpeed engines wrap the real module in `.module`
+            teacher_inference = teacher_model.module if hasattr(teacher_model, "module") else teacher_model
+
+            student_out  = model(**single_batch,
+                                output_hidden_states=True,
+                                use_cache=False)
+            teacher_out  = teacher_inference(**single_batch,
+                                            output_hidden_states=True,
+                                            use_cache=False)
+
+        student_h = student_out.hidden_states      # Tuple [emb + L layers]
+        teacher_h = teacher_out.hidden_states
+
+        assert len(student_h) == len(teacher_h), "Mismatch in #layers of hidden states"
+
+        per_layer_l2 = []
+
+        # skip index‑0 (embedding) so we report only transformer layers
+        for idx in range(1, len(student_h)):
+            diff = (student_h[idx].float() - teacher_h[idx].float()).pow(2).mean().sqrt()
+            l2   = diff.item()
+            per_layer_l2.append(l2)
+            print(f"  Layer {idx:02d}:  RMS‑L2 = {l2:.4f}")
+
+        avg_l2 = sum(per_layer_l2) / len(per_layer_l2)
+        print(f"\n[DEBUG] Mean RMS‑L2 across layers: {avg_l2:.4f}")
+
+        # Optional: stop here so you can inspect the numbers
+        import sys
+        sys.exit("Hidden‑state L2 check complete. Exiting.")
+        # ---> END DEBUG BLOCK <---
+
+
+        # # ---> START DEBUG BLOCK <---
+        # print("\n[DEBUG] Performing pre-flight check...")
+        # print("[DEBUG] Setting model to EVAL mode to match evaluation script...")
+        # model.eval()
+        # model.to('cuda')
+        # teacher_model.to('cuda')
+        # # 1. Get a single batch of data
+        # data_loader = load_data(cfg)["train"]
+        # single_batch = next(iter(data_loader))
+        # single_batch = {k: v.to('cuda') for k, v in single_batch.items() if isinstance(v, torch.Tensor)}
+
+        # # Define an input dictionary that mimics lm-eval-harness (NO 'labels')
+        # inference_inputs = {
+        #     "input_ids": single_batch["input_ids"],
+        #     "attention_mask": single_batch["attention_mask"]
+        # }
+
+        # # 2. Run all model variations
+        # with torch.no_grad():
+        #     print("[DEBUG] Getting teacher logits...")
+        #     # Use the raw model if wrapped by DeepSpeed
+        #     teacher_for_inference = teacher_model.module if hasattr(teacher_model, 'module') else teacher_model
+        #     teacher_logits = teacher_for_inference(**single_batch).logits.float()
+
+        #     print("[DEBUG] Getting student logits (with 'labels' passed)...")
+        #     student_logits_with_labels = model(**single_batch).logits.float()
+
+        #     print("[DEBUG] Getting student logits (NO 'labels' passed)...")
+        #     student_logits_no_labels = model(**inference_inputs).logits.float()
+
+        # # 3. Define a KL loss function for comparison
+        # def calculate_kl(student_logits, teacher_logits):
+        #     log_softmax_student = F.log_softmax(student_logits, dim=-1)
+        #     softmax_teacher = F.softmax(teacher_logits, dim=-1)
+        #     return F.kl_div(log_softmax_student, softmax_teacher, reduction='batchmean')
+
+        # kl_loss_with_labels = calculate_kl(student_logits_with_labels, teacher_logits)
+        # kl_loss_no_labels = calculate_kl(student_logits_no_labels, teacher_logits)
+
+        # # 4. Inspect the outputs
+        # print("\n--- DEBUG RESULTS ---")
+        # print(f"KL Divergence (Student vs. Teacher) when 'labels' is PASSED:    {kl_loss_with_labels.item():.4f}")
+        # print(f"KL Divergence (Student vs. Teacher) when 'labels' is NOT PASSED: {kl_loss_no_labels.item():.4f}")
+
+        # # This checks if the two student forward passes produced the same result
+        # logit_diff = torch.mean(torch.abs(student_logits_with_labels - student_logits_no_labels))
+        # print(f"Mean absolute difference between student's own logits: {logit_diff.item():.6f}")
+        # print("---------------------\n")
+
+        # if logit_diff > 1e-4:
+        #     print("[CONCLUSION] HYPOTHESIS CONFIRMED: The model's forward pass behaves differently based on the 'labels' argument.")
+        #     print("The high KL loss is real, but your evaluation script was triggering a different, teacher-like code path.")
+        # else:
+        #     print("[CONCLUSION] HYPOTHESIS REJECTED: The 'labels' argument makes no difference. The mystery remains.")
+
+        # # Exit after the check to avoid running a full training
+        # import sys
+        # sys.exit("Pre-flight check complete. Exiting.")
+        # # ---> END DEBUG BLOCK <---
 
         if measure_memory:
             measure_gpu_memory(model, "Stage 2 Student")
@@ -289,8 +404,8 @@ def main(cfg, measure_memory=False):
         bf16                        = True,
         logging_steps               = 10,
         evaluation_strategy         = "steps" if cfg.data.val_set_size > 0 else "no",
-        eval_steps                  = 200,
-        save_steps                  = 500,
+        eval_steps                  = 50,
+        save_steps                  = 50,
         save_total_limit            = 10000,
         metric_for_best_model       = "loss",
         greater_is_better           = False,
@@ -324,34 +439,6 @@ def main(cfg, measure_memory=False):
     elif stage == 3:
         # FinetuneTrainer takes no extra args from this list
         trainer = FinetuneTrainer(**trainer_kwargs)
-
-    # # 6. Instantiate the trainer
-    # if stage == 1:
-    #     # Stage 1 trainer
-    #     trainer = trainer_class(
-    #         model          = model,
-    #         args           = training_args,
-    #         train_dataset  = train_loader.dataset,
-    #         eval_dataset   = eval_loader.dataset if cfg.data.val_set_size > 0 else None,
-    #         data_collator  = train_loader.collate_fn,
-    #         optimizers     = (optim, sched),
-    #         tokenizer      = tokenizer,
-    #         mse_factor     = 1.0,  # if DistillTrainer needs it
-    #     )
-    # else:
-    #     # Stage 2 trainer
-    #     trainer = trainer_class(
-    #         model          = model,
-    #         teacher_model  = teacher_model,
-    #         kl_weight      = cfg.distillation.kl_weight,
-    #         ce_weight      = cfg.distillation.ce_weight,
-    #         args           = training_args,
-    #         train_dataset  = train_loader.dataset,
-    #         eval_dataset   = eval_loader.dataset if cfg.data.val_set_size > 0 else None,
-    #         data_collator  = train_loader.collate_fn,
-    #         optimizers     = (optim, sched),
-    #         tokenizer      = tokenizer,
-    #     )
 
     # 7. Train
     trainer.train(resume_from_checkpoint=None)
