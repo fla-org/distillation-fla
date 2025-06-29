@@ -2,11 +2,11 @@ data:
   name: "dclm-10B"
   path: "robbiegwaldd/dclm-10B"
   batch_size: 96
-  micro_batch_size: 12
+  micro_batch_size: 24
   val_set_size: 200
 model:
   name: 'rapid_distill_stage_1_qwen'
-  pretrained_model_name_or_path: 'Qwen/Qwen2.5-7B-Instruct'
+  pretrained_model_name_or_path: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B'
   max_length: 512
   # tokenizer
   add_eos_token: False
@@ -17,12 +17,12 @@ train:
   max_steps: null
   epochs: null
   optim: 'adamw_torch'
-  lr_scheduler_type: cosine_with_min_lr
+  lr_scheduler_type: cosine
   lr: 0.001
   min_lr: 0.00001 
 
   max_grad_norm: 1.0
-  output_dir: 'checkpoints'
+  output_dir: 'checkpoints_stage_1_dpsk_qwen_1_5B'
 
   train_qk: False
   train_qk_lora: False
