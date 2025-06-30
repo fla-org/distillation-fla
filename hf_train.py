@@ -62,7 +62,7 @@ def main(cfg):
         evaluation_strategy         = "steps" if cfg.data.val_set_size > 0 else "no",
         eval_steps                  = 200,
         save_steps                  = 200,
-        save_total_limit            = 3,
+        save_total_limit            = 10000,
         metric_for_best_model       = "loss",
         greater_is_better           = False,
         output_dir                  = cfg.train.output_dir,
