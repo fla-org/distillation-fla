@@ -141,14 +141,15 @@ class LigerQwen2GatedLinearAttention(nn.Module):
             self.num_heads * self.head_dim,
             bias=False,
         )
+        self.gate_low_rank_dim = 16
+        self.gk_proj_s = nn.Sequential(nn.Linear(self.hidden_size, self.gate_low_rank_dim, bias=False),
+                                     nn.Linear(self.gate_low_rank_dim, self.num_key_value_heads * self.head_dim, bias=True))
 
         # Plain RMSNorm is enough; you can replace by FusedRMSNormGated
-        # if you have the custom CUDA op compiled.
         self.g_norm = Qwen2RMSNorm(
             self.head_dim, eps=config.rms_norm_eps
         )
 
-        # Activation used by the paper – silu == swish.
         self._gate_fn = torch.nn.SiLU()
 
     def init_student_weights(self):
@@ -304,7 +305,8 @@ class LigerQwen2GatedLinearAttention(nn.Module):
         q = self.q_proj_s(hidden_states)
         k = self.k_proj_s(hidden_states)
         v = self.v_proj_s(hidden_states)
-        g = self.pool_g(k)
+        gk = self.gk_proj_s(hidden_states)
+        # g = self.pool_g(k)
 
         # window_size =
         batch_size, q_len, _ = hidden_states.size()
@@ -324,19 +326,19 @@ class LigerQwen2GatedLinearAttention(nn.Module):
         q = rearrange(q, 'b n (h d) -> b n h d', h=self.num_heads)
         k = rearrange(k, 'b n (h d) -> b n h d', h=self.num_key_value_heads)
         v = rearrange(v, 'b n (h d) -> b n h d', h=self.num_key_value_heads)
-        g = rearrange(g, 'b n (h m) -> b n h m', h=self.num_key_value_heads)
+        gk = rearrange(gk, 'b n (h m) -> b n h m', h=self.num_key_value_heads)
 
         k = repeat(k, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
         v = repeat(v, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
-        g = repeat(g, 'b n h m -> b n (h g) m', g=self.num_key_value_groups)
+        gk = repeat(gk, 'b n h m -> b n (h g) m', g=self.num_key_value_groups)
 
         sq, sk, sv = q, k, v
-        # fuse this.
-        q = F.softmax(q.float(), dim=-1).to(v)
-        k = F.softmax(k.float(), dim=-1).to(v)
+        # # fuse this.
+        # q = F.softmax(q.float(), dim=-1).to(v)
+        # k = F.softmax(k.float(), dim=-1).to(v)
 
         gate_logit_normalizer = 16
-        g = F.logsigmoid(g.float()) / gate_logit_normalizer  # (b, h, n, m)
+        gk = F.logsigmoid(gk.float()) / gate_logit_normalizer  # (b, h, n, m)
 
         recurrent_state = last_state['recurrent_state'] if last_state is not None else None
         scale = 1
@@ -359,19 +361,19 @@ class LigerQwen2GatedLinearAttention(nn.Module):
 
         if self.training or q.shape[1] > 1:
             if attention_mask is not None:
-                q, (k, v, g), indices_q, cu_seqlens_rnns, max_seq_lens = unpad_input(
-                    q, (k, v, g), attention_mask, q_len)
+                q, (k, v, gk), indices_q, cu_seqlens_rnns, max_seq_lens = unpad_input(
+                    q, (k, v, gk), attention_mask, q_len)
                 o_, recurrent_state = chunk_gla(
-                    q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0), g.unsqueeze(0), scale=scale, initial_state=recurrent_state, output_final_state=True,
+                    q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0), gk.unsqueeze(0), scale=scale, initial_state=recurrent_state, output_final_state=True,
                     cu_seqlens=cu_seqlens_rnns[0]
                 )
                 o_ = pad_input(o_.squeeze(0), indices_q, batch_size, q_len)
             else:
                 o_, recurrent_state = chunk_gla(
-                    q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True)
+                    q, k, v, gk, scale=scale, initial_state=recurrent_state, output_final_state=True)
         else:
             o_, recurrent_state = fused_recurrent_gla(
-                q, k, v, g, scale=scale, initial_state=recurrent_state, output_final_state=True)
+                q, k, v, gk, scale=scale, initial_state=recurrent_state, output_final_state=True)
 
         if past_key_value is not None:
             past_key_value.update(
@@ -416,22 +418,24 @@ class LigerQwen2GatedLinearAttention(nn.Module):
                 causal=True,
                 window_size=(-1, -1) if self.window_size is None else (self.window_size-1, 0)
             )
+        o_ = 0.5 * y + 0.5 * o_
+        o = rearrange(o_, 'b n h d -> b n (h d)').to(hidden_states.dtype)
+        o = self.o_proj_s(o)
+
+        # ==== if use use_output_gate ===
+        # # `o_` is (b, n, h, d).  Renormalise & apply output‑gate before mixing.
+        # o_ = self.g_norm(o_)                                    # RMSNorm
+        # g_out = self.g_proj_s(hidden_states)                    # (b, n, h*d)
+        # g_out = rearrange(g_out, 'b n (h d) -> b n h d', h=self.num_heads)
+        # o_ = o_ * self._gate_fn(g_out)                          # gated output
+
+        # # combine with Flash‑Attention 
         # o_ = 0.5 * y + 0.5 * o_
+
+        # # final reshape & projection
         # o = rearrange(o_, 'b n h d -> b n (h d)').to(hidden_states.dtype)
         # o = self.o_proj_s(o)
 
-        # `o_` is (b, n, h, d).  Renormalise & apply output‑gate before mixing.
-        o_ = self.g_norm(o_)                                    # RMSNorm
-        g_out = self.g_proj_s(hidden_states)                    # (b, n, h*d)
-        g_out = rearrange(g_out, 'b n (h d) -> b n h d', h=self.num_heads)
-        o_ = o_ * self._gate_fn(g_out)                          # gated output
-
-        # combine with Flash‑Attention 
-        o_ = 0.5 * y + 0.5 * o_
-
-        # final reshape & projection
-        o = rearrange(o_, 'b n h d -> b n (h d)').to(hidden_states.dtype)
-        o = self.o_proj_s(o)
         return o, None, past_key_value
 
 
