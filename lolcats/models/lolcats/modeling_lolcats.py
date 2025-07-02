@@ -20,10 +20,10 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.llama.modeling_llama import (
-    LLAMA_INPUTS_DOCSTRING, LlamaAttention, LlamaDecoderLayer,
+    LlamaAttention, LlamaDecoderLayer,
     LlamaForCausalLM, LlamaForSequenceClassification, LlamaMLP, LlamaModel,
     LlamaPreTrainedModel, LlamaRMSNorm, LlamaRotaryEmbedding,
-    LlamaSdpaAttention, apply_rotary_pos_emb, repeat_kv)
+    apply_rotary_pos_emb, repeat_kv)
 from transformers.utils import (add_code_sample_docstrings,
                                 add_start_docstrings,
                                 add_start_docstrings_to_model_forward,
@@ -932,7 +932,6 @@ class LolcatsModel(LlamaModel, LolcatsPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
