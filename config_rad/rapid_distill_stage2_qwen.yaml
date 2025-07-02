@@ -1,0 +1,38 @@
+data:
+  name: "dclm-10B"
+  path: "robbiegwaldd/dclm-10B"
+  batch_size: 96
+  micro_batch_size: 8
+  val_set_size: 200
+
+model:
+  name: 'rapid_distill_stage_2_qwen'
+  pretrained_model_name_or_path: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B'
+  max_length: 512
+
+train:
+  target_tokens: 250_000_000
+  epochs: null
+  max_steps: null
+  optim: 'adamw_torch'
+  lr_scheduler_type: constant
+  lr: 0.00001
+  min_lr: 0.00001
+  max_grad_norm: 1.0
+  output_dir: 'checkpoints_stage_2'
+  train_qk: False
+  train_qk_lora: False
+  train_v: False
+  train_v_lora: False
+  student_init_ckpt: 'checkpoints_stage_1_dpsk_qwen_1_5B/checkpoint-2000'
+
+distillation:
+  # teacher model & kd parameters
+  # important: teacher_model points to a fully trained model from stage 1
+  teacher_model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+  kl_weight: 1.0
+  ce_weight: 0
+  hs_weight: 1.0 
+  teacher_deepspeed_cfg: "ds_config_2.json"
+
+stage: 2
