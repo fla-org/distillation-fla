@@ -37,13 +37,13 @@ class DistillTrainer(_BaseTrainer):
 
         loss_mse = 0.0
         n_layers = 0
-        for layer_attn in attentions:
-            if layer_attn is not None:
-                loss_mse += self.criterion_mse(layer_attn[0], layer_attn[1])
-                n_layers += 1
-        if n_layers:
-            loss_mse = loss_mse / n_layers * self.mse_factor
-
+        all_diffs = []
+        for teacher_hidden_states, student_hidden_states in attentions:
+            diff = teacher_hidden_states - student_hidden_states
+            all_diffs.append(diff)
+        if all_diffs:
+            concat_diff = torch.cat(all_diffs, dim=0)
+            loss_mse = torch.linalg.vector_norm(concat_diff, dim=-1).mean() * (concat_diff.size(-1) ** -0.5) * self.mse_factor
         if return_outputs:
             extra = {"loss_mse": loss_mse.detach().cpu().item(),
                      "mse_factor": self.mse_factor}
@@ -124,9 +124,8 @@ class KDTrainer(Trainer):
         kl_loss = F.kl_div(
             F.log_softmax(student_logits, dim=-1),
             F.softmax(teacher_logits, dim=-1),
-            reduction='batchmean'
+            reduction='mean'
         )
-
 
         total_loss = self.kl_weight * kl_loss + self.ce_weight * cross_entropy_loss
 
@@ -179,13 +178,13 @@ class KDTrainer(Trainer):
 #             student_hidden_states = student_outputs.hidden_states[-1]
 
 #         # --- 3. KL Divergence with FusedKLDivLoss ---
-        
+
 #         # FusedKLDivLoss expects inputs of shape [*, hidden_size].
 #         # Model outputs are typically [batch_size, seq_len, hidden_size].
 #         # We flatten the batch and sequence dimensions.
 #         student_hidden_states_flat = student_hidden_states.view(-1, student_hidden_states.size(-1))
 #         teacher_hidden_states_flat = teacher_hidden_states.view(-1, teacher_hidden_states.size(-1))
-        
+
 #         # Get the language model head weights from both models.
 #         # This assumes the models have a `get_output_embeddings` method,
 #         # which is standard for Hugging Face CausalLM models.
