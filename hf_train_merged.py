@@ -8,6 +8,40 @@ from training.dataloader import load_data
 from training.utils import count_model_params, get_optimizer_and_scheduler
 from hf_trainer import DistillTrainer, FinetuneTrainer, KDTrainer
 
+from transformers import TrainerCallback, TrainingArguments, TrainerState, TrainerControl
+
+class SaveAtStep0Callback(TrainerCallback):
+    """
+    A callback that saves the model at step 0 and then stops training.
+    This version expects the trainer to be attached to it after initialization.
+    """
+    def __init__(self):
+        super().__init__()
+        self.trainer = None # Initialize trainer attribute
+
+    def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        """
+        Event called at the very beginning of training.
+        """
+        if self.trainer is None:
+            # Safety check
+            raise ValueError("Trainer instance was not attached to the callback.")
+
+        print("--- Callback: Saving model at Step 0... ---")
+        
+        # Define the output directory
+        output_dir = os.path.join(args.output_dir, "checkpoint-0")
+        
+        # Use the attached trainer's save function
+        self.trainer.save_model(output_dir)
+        
+        print(f"--- Model saved to {output_dir}. Halting training. ---")
+        
+        # Set the flag to stop training
+        control.should_training_stop = True
+        
+        return control
+
 
 def measure_gpu_memory(model, label="Model"):
     """
@@ -123,6 +157,7 @@ def build_student_for_stage2(cfg):
     # We use the base model's config and update our custom one, just like in stage 1.
     base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
     if cfg.model.name.startswith("rapid_distill_stage"): # Make this check more general
+        # TODO: change name
         from lolcats.models.rapid_distill_stage_1_qwen import LigerQwen2GLAConfig as LC
         lg_cfg = LC()
         lg_cfg.__dict__.update(base_cfg.__dict__)
@@ -191,7 +226,7 @@ def build_model_for_stage3(cfg):
 
     model = AutoModelForCausalLM.from_pretrained(
         stage2_ckpt_path,
-        config=model_config, # Use the CORRECT (custom) config
+        config=model_config,
         torch_dtype=torch.bfloat16
     )
 
@@ -246,119 +281,6 @@ def main(cfg, measure_memory=False):
         teacher_model = build_teacher_for_stage2(cfg)
         trainer_class = KDTrainer
 
-
-        # ---> START DEBUG BLOCK <---
-        print("\n[DEBUG] Pre‑flight check: per‑layer hidden‑state L2 loss")
-
-        import torch.nn.functional as F
-        model.eval()
-        teacher_model.eval()
-
-        # Move to GPU (or keep on CPU if that is what you use)
-        model.to("cuda")
-        teacher_model.to("cuda")
-
-        # 1. Get one mini‑batch
-        data_loader = load_data(cfg)["train"]
-        single_batch = next(iter(data_loader))
-        single_batch = {k: v.to("cuda") for k, v in single_batch.items()
-                        if isinstance(v, torch.Tensor)}
-
-        # 2. Forward passes with hidden states
-        with torch.no_grad():
-            # DeepSpeed engines wrap the real module in `.module`
-            teacher_inference = teacher_model.module if hasattr(teacher_model, "module") else teacher_model
-
-            student_out  = model(**single_batch,
-                                output_hidden_states=True,
-                                use_cache=False)
-            teacher_out  = teacher_inference(**single_batch,
-                                            output_hidden_states=True,
-                                            use_cache=False)
-
-        student_h = student_out.hidden_states      # Tuple [emb + L layers]
-        teacher_h = teacher_out.hidden_states
-
-        assert len(student_h) == len(teacher_h), "Mismatch in #layers of hidden states"
-
-        per_layer_l2 = []
-
-        # skip index‑0 (embedding) so we report only transformer layers
-        for idx in range(1, len(student_h)):
-            diff = (student_h[idx].float() - teacher_h[idx].float()).pow(2).mean().sqrt()
-            l2   = diff.item()
-            per_layer_l2.append(l2)
-            print(f"  Layer {idx:02d}:  RMS‑L2 = {l2:.4f}")
-
-        avg_l2 = sum(per_layer_l2) / len(per_layer_l2)
-        print(f"\n[DEBUG] Mean RMS‑L2 across layers: {avg_l2:.4f}")
-
-        # Optional: stop here so you can inspect the numbers
-        import sys
-        sys.exit("Hidden‑state L2 check complete. Exiting.")
-        # ---> END DEBUG BLOCK <---
-
-
-        # # ---> START DEBUG BLOCK <---
-        # print("\n[DEBUG] Performing pre-flight check...")
-        # print("[DEBUG] Setting model to EVAL mode to match evaluation script...")
-        # model.eval()
-        # model.to('cuda')
-        # teacher_model.to('cuda')
-        # # 1. Get a single batch of data
-        # data_loader = load_data(cfg)["train"]
-        # single_batch = next(iter(data_loader))
-        # single_batch = {k: v.to('cuda') for k, v in single_batch.items() if isinstance(v, torch.Tensor)}
-
-        # # Define an input dictionary that mimics lm-eval-harness (NO 'labels')
-        # inference_inputs = {
-        #     "input_ids": single_batch["input_ids"],
-        #     "attention_mask": single_batch["attention_mask"]
-        # }
-
-        # # 2. Run all model variations
-        # with torch.no_grad():
-        #     print("[DEBUG] Getting teacher logits...")
-        #     # Use the raw model if wrapped by DeepSpeed
-        #     teacher_for_inference = teacher_model.module if hasattr(teacher_model, 'module') else teacher_model
-        #     teacher_logits = teacher_for_inference(**single_batch).logits.float()
-
-        #     print("[DEBUG] Getting student logits (with 'labels' passed)...")
-        #     student_logits_with_labels = model(**single_batch).logits.float()
-
-        #     print("[DEBUG] Getting student logits (NO 'labels' passed)...")
-        #     student_logits_no_labels = model(**inference_inputs).logits.float()
-
-        # # 3. Define a KL loss function for comparison
-        # def calculate_kl(student_logits, teacher_logits):
-        #     log_softmax_student = F.log_softmax(student_logits, dim=-1)
-        #     softmax_teacher = F.softmax(teacher_logits, dim=-1)
-        #     return F.kl_div(log_softmax_student, softmax_teacher, reduction='batchmean')
-
-        # kl_loss_with_labels = calculate_kl(student_logits_with_labels, teacher_logits)
-        # kl_loss_no_labels = calculate_kl(student_logits_no_labels, teacher_logits)
-
-        # # 4. Inspect the outputs
-        # print("\n--- DEBUG RESULTS ---")
-        # print(f"KL Divergence (Student vs. Teacher) when 'labels' is PASSED:    {kl_loss_with_labels.item():.4f}")
-        # print(f"KL Divergence (Student vs. Teacher) when 'labels' is NOT PASSED: {kl_loss_no_labels.item():.4f}")
-
-        # # This checks if the two student forward passes produced the same result
-        # logit_diff = torch.mean(torch.abs(student_logits_with_labels - student_logits_no_labels))
-        # print(f"Mean absolute difference between student's own logits: {logit_diff.item():.6f}")
-        # print("---------------------\n")
-
-        # if logit_diff > 1e-4:
-        #     print("[CONCLUSION] HYPOTHESIS CONFIRMED: The model's forward pass behaves differently based on the 'labels' argument.")
-        #     print("The high KL loss is real, but your evaluation script was triggering a different, teacher-like code path.")
-        # else:
-        #     print("[CONCLUSION] HYPOTHESIS REJECTED: The 'labels' argument makes no difference. The mystery remains.")
-
-        # # Exit after the check to avoid running a full training
-        # import sys
-        # sys.exit("Pre-flight check complete. Exiting.")
-        # # ---> END DEBUG BLOCK <---
-
         if measure_memory:
             measure_gpu_memory(model, "Stage 2 Student")
             # For DeepSpeed-sharded teacher, this will measure the shard on the current device
@@ -405,7 +327,7 @@ def main(cfg, measure_memory=False):
         logging_steps               = 10,
         evaluation_strategy         = "steps" if cfg.data.val_set_size > 0 else "no",
         eval_steps                  = 50,
-        save_steps                  = 50,
+        save_steps                  = 200,
         save_total_limit            = 10000,
         metric_for_best_model       = "loss",
         greater_is_better           = False,
@@ -428,6 +350,10 @@ def main(cfg, measure_memory=False):
         "tokenizer": tokenizer,
     }
 
+    # save_at_step_0_callback = SaveAtStep0Callback()
+
+    # trainer_kwargs["callbacks"] = [save_at_step_0_callback]
+
     if stage == 1:
         trainer_kwargs["mse_factor"] = 1.0 # Or from cfg
         trainer = DistillTrainer(**trainer_kwargs)
@@ -439,6 +365,9 @@ def main(cfg, measure_memory=False):
     elif stage == 3:
         # FinetuneTrainer takes no extra args from this list
         trainer = FinetuneTrainer(**trainer_kwargs)
+
+    # save_at_step_0_callback.trainer = trainer
+        
 
     # 7. Train
     trainer.train(resume_from_checkpoint=None)

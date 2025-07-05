@@ -126,6 +126,7 @@ class LigerQwen2GatedLinearAttention(nn.Module):
         self.rotary = RotaryEmbedding(
             dim=self.head_dim, base=config.rope_theta)
 
+        # Used by Liger; We opt not to use it.
         self.pool_g = nn.AdaptiveAvgPool1d(
             output_size=self.head_dim * self.num_key_value_heads)
 
@@ -145,12 +146,12 @@ class LigerQwen2GatedLinearAttention(nn.Module):
         self.gk_proj_s = nn.Sequential(nn.Linear(self.hidden_size, self.gate_low_rank_dim, bias=False),
                                      nn.Linear(self.gate_low_rank_dim, self.num_key_value_heads * self.head_dim, bias=True))
 
-        # Plain RMSNorm is enough; you can replace by FusedRMSNormGated
-        self.g_norm = Qwen2RMSNorm(
-            self.head_dim, eps=config.rms_norm_eps
-        )
+        # # Plain RMSNorm is enough; you can replace by FusedRMSNormGated
+        # self.g_norm = Qwen2RMSNorm(
+        #     self.head_dim, eps=config.rms_norm_eps
+        # )
 
-        self._gate_fn = torch.nn.SiLU()
+        # self._gate_fn = torch.nn.SiLU()
 
     def init_student_weights(self):
         # This should be done when the model is initialized from a teacher model.
@@ -277,7 +278,7 @@ class LigerQwen2GatedLinearAttention(nn.Module):
             position_ids=position_ids,
             dropout=0.0,
             is_causal=True,
-            target_dtype=v.dtype,
+            # target_dtype=v.dtype,
         )
         o = rearrange(o, 'b n h d -> b n (h d)')
         o = self.o_proj(o)
@@ -305,8 +306,8 @@ class LigerQwen2GatedLinearAttention(nn.Module):
         q = self.q_proj_s(hidden_states)
         k = self.k_proj_s(hidden_states)
         v = self.v_proj_s(hidden_states)
-        gk = self.gk_proj_s(hidden_states)
-        # g = self.pool_g(k)
+        # gk = self.gk_proj_s(hidden_states)
+        gk = self.pool_g(k)
 
         # window_size =
         batch_size, q_len, _ = hidden_states.size()
@@ -334,8 +335,8 @@ class LigerQwen2GatedLinearAttention(nn.Module):
 
         sq, sk, sv = q, k, v
         # # fuse this.
-        # q = F.softmax(q.float(), dim=-1).to(v)
-        # k = F.softmax(k.float(), dim=-1).to(v)
+        q = F.softmax(q.float(), dim=-1).to(v)
+        k = F.softmax(k.float(), dim=-1).to(v)
 
         gate_logit_normalizer = 16
         gk = F.logsigmoid(gk.float()) / gate_logit_normalizer  # (b, h, n, m)
