@@ -6,7 +6,7 @@ data:
   val_set_size: 200
 model:
   name: 'rapid_distill_stage_1_qwen'
-  pretrained_model_name_or_path: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B'
+  pretrained_model_name_or_path: 'Qwen/Qwen2.5-7B-Instruct'
   max_length: 512
   # tokenizer
   add_eos_token: False
@@ -18,11 +18,11 @@ train:
   epochs: null
   optim: 'adamw_torch'
   lr_scheduler_type: cosine
-  lr: 0.001
+  lr: 0.00001
   min_lr: 0.00001 
 
   max_grad_norm: 1.0
-  output_dir: 'checkpoints_stage_1_dpsk_qwen_1_5B'
+  output_dir: 'checkpoints_stage_1_qwen_7b_instruct_v4'
 
   train_qk: False
   train_qk_lora: False
