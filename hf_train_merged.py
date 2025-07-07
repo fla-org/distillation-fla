@@ -230,6 +230,10 @@ def build_model_for_stage3(cfg):
         torch_dtype=torch.bfloat16
     )
 
+    # After loading, purify the model by destroying the unneeded teacher weights!!!!
+    if hasattr(model, "destroy_teacher_weights"):
+        model.destroy_teacher_weights()
+
     # For Stage 3, all parameters should be trainable for fine-tuning.
     for name, p in model.named_parameters():
         p.requires_grad = True
@@ -281,6 +285,8 @@ def main(cfg, measure_memory=False):
         teacher_model = build_teacher_for_stage2(cfg)
         trainer_class = KDTrainer
 
+        ds_config_path = os.path.join(os.getcwd(), "ds_config_2.json")
+
         if measure_memory:
             measure_gpu_memory(model, "Stage 2 Student")
             # For DeepSpeed-sharded teacher, this will measure the shard on the current device
@@ -297,6 +303,8 @@ def main(cfg, measure_memory=False):
         if measure_memory:
             measure_gpu_memory(model, "Stage 3 Model")
 
+        ds_config_path = os.path.join(os.getcwd(), "ds_config_3.json")
+
     else:
         raise ValueError(f"Unknown stage: {stage}. Must be 1, 2, or 3.")
 
@@ -312,7 +320,7 @@ def main(cfg, measure_memory=False):
     max_steps = (tgt_tok // (cfg.data.batch_size * seq_len)) if tgt_tok else cfg.train.max_steps
 
     # 4. Prepare the student's DS config / TrainingArguments
-    ds_config_path = os.path.join(os.getcwd(), "ds_config_2.json")
+    
     if os.path.exists(ds_config_path):
         print(f"Using DS config = {ds_config_path}")
     else:
