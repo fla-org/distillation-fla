@@ -115,9 +115,9 @@ class LigerQwen2GatedLinearAttention(nn.Module):
         self.q_proj_s = nn.Linear(
             self.hidden_size, self.num_heads * self.head_dim, bias=True)
         self.k_proj_s = nn.Linear(
-            self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
+            self.hidden_size, self.num_heads * self.head_dim, bias=True)
         self.v_proj_s = nn.Linear(
-            self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
+            self.hidden_size, self.num_heads * self.head_dim, bias=True)
         self.o_proj_s = nn.Linear(
             self.num_heads * self.head_dim, self.hidden_size, bias=False)
 
@@ -128,7 +128,7 @@ class LigerQwen2GatedLinearAttention(nn.Module):
 
         # Used by Liger; We opt not to use it.
         self.pool_g = nn.AdaptiveAvgPool1d(
-            output_size=self.head_dim * self.num_key_value_heads)
+            output_size=self.head_dim * self.num_heads)
 
         self.window_size = 64
 
@@ -144,7 +144,7 @@ class LigerQwen2GatedLinearAttention(nn.Module):
         )
         self.gate_low_rank_dim = 16
         self.gk_proj_s = nn.Sequential(nn.Linear(self.hidden_size, self.gate_low_rank_dim, bias=False),
-                                     nn.Linear(self.gate_low_rank_dim, self.num_key_value_heads * self.head_dim, bias=True))
+                                     nn.Linear(self.gate_low_rank_dim, self.num_heads * self.head_dim, bias=True))
 
         # # Plain RMSNorm is enough; you can replace by FusedRMSNormGated
         # self.g_norm = Qwen2RMSNorm(
@@ -153,17 +153,52 @@ class LigerQwen2GatedLinearAttention(nn.Module):
 
         # self._gate_fn = torch.nn.SiLU()
 
+    # def init_student_weights(self):
+    #     # This should be done when the model is initialized from a teacher model.
+    #     # So q_proj.weight.data is the teacher model's weight.
+    #     # Likewise for k_proj, v_proj, and o_proj.
+    #     self.q_proj_s.weight.data.copy_(self.q_proj.weight.data)
+    #     self.k_proj_s.weight.data.copy_(self.k_proj.weight.data)
+    #     self.v_proj_s.weight.data.copy_(self.v_proj.weight.data)
+    #     self.o_proj_s.weight.data.copy_(self.o_proj.weight.data)
+    #     if self.layer_idx == 0:
+    #         print(
+    #             "Student weight copied from teacher!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+
     def init_student_weights(self):
-        # This should be done when the model is initialized from a teacher model.
-        # So q_proj.weight.data is the teacher model's weight.
-        # Likewise for k_proj, v_proj, and o_proj.
+        # Implement weight/bias repeating for initialization.
+        # initializes the student's MHA layers from the teacher's GQA layers.
         self.q_proj_s.weight.data.copy_(self.q_proj.weight.data)
-        self.k_proj_s.weight.data.copy_(self.k_proj.weight.data)
-        self.v_proj_s.weight.data.copy_(self.v_proj.weight.data)
         self.o_proj_s.weight.data.copy_(self.o_proj.weight.data)
+        if self.q_proj.bias is not None:
+             self.q_proj_s.bias.data.copy_(self.q_proj.bias.data)
+
+        # Repeat K, V weights and biases from GQA to MHA
+        if self.num_key_value_groups > 1:
+            # Repeat K
+            gqa_k_weights = self.k_proj.weight.data
+            self.k_proj_s.weight.data.copy_(gqa_k_weights.repeat(self.num_key_value_groups, 1))
+            if self.k_proj.bias is not None:
+                gqa_k_bias = self.k_proj.bias.data
+                self.k_proj_s.bias.data.copy_(gqa_k_bias.repeat(self.num_key_value_groups))
+
+            # Repeat V
+            gqa_v_weights = self.v_proj.weight.data
+            self.v_proj_s.weight.data.copy_(gqa_v_weights.repeat(self.num_key_value_groups, 1))
+            if self.v_proj.bias is not None:
+                gqa_v_bias = self.v_proj.bias.data
+                self.v_proj_s.bias.data.copy_(gqa_v_bias.repeat(self.num_key_value_groups))
+        else: # If it's already MHA, just copy
+            self.k_proj_s.weight.data.copy_(self.k_proj.weight.data)
+            self.v_proj_s.weight.data.copy_(self.v_proj.weight.data)
+            if self.k_proj.bias is not None:
+                self.k_proj_s.bias.data.copy_(self.k_proj.bias.data)
+            if self.v_proj.bias is not None:
+                self.v_proj_s.bias.data.copy_(self.v_proj.bias.data)
+
         if self.layer_idx == 0:
-            print(
-                "Student weight copied from teacher!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print("Student weights initialized by REPEATING teacher K/V weights!")
+
 
     def destroy_teacher_weights(self):
 
@@ -325,13 +360,13 @@ class LigerQwen2GatedLinearAttention(nn.Module):
 
         max_seqlen = max(max_seqlen, 4096)
         q = rearrange(q, 'b n (h d) -> b n h d', h=self.num_heads)
-        k = rearrange(k, 'b n (h d) -> b n h d', h=self.num_key_value_heads)
-        v = rearrange(v, 'b n (h d) -> b n h d', h=self.num_key_value_heads)
-        gk = rearrange(gk, 'b n (h m) -> b n h m', h=self.num_key_value_heads)
+        k = rearrange(k, 'b n (h d) -> b n h d', h=self.num_heads)
+        v = rearrange(v, 'b n (h d) -> b n h d', h=self.num_heads)
+        gk = rearrange(gk, 'b n (h m) -> b n h m', h=self.num_heads)
 
-        k = repeat(k, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
-        v = repeat(v, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
-        gk = repeat(gk, 'b n h m -> b n (h g) m', g=self.num_key_value_groups)
+        # k = repeat(k, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
+        # v = repeat(v, 'b n h d -> b n (h g) d', g=self.num_key_value_groups)
+        # gk = repeat(gk, 'b n h m -> b n (h g) m', g=self.num_key_value_groups)
 
         sq, sk, sv = q, k, v
         # # fuse this.
