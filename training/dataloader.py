@@ -114,7 +114,7 @@ def load_data(config):
         **{k: v for k, v in dataset_config.items() if k not in ignore_kwargs}
     )
     dataset = dataset['train']
-    train_set = dataset.select(range(200, len(dataset)))
+    train_set = dataset.select(range(200, int(len(dataset)/20)))
     val_set   = dataset.select(range(0, 200))
     test_set  = dataset.select(range(0, 200))
 
