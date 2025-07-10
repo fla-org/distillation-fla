@@ -166,39 +166,74 @@ class LigerQwen2GatedLinearAttention(nn.Module):
     #             "Student weight copied from teacher!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
     def init_student_weights(self):
-        # Implement weight/bias repeating for initialization.
-        # initializes the student's MHA layers from the teacher's GQA layers.
-        self.q_proj_s.weight.data.copy_(self.q_proj.weight.data)
-        self.o_proj_s.weight.data.copy_(self.o_proj.weight.data)
-        if self.q_proj.bias is not None:
-             self.q_proj_s.bias.data.copy_(self.q_proj.bias.data)
+            self.q_proj_s.weight.data.copy_(self.q_proj.weight.data)
+            self.o_proj_s.weight.data.copy_(self.o_proj.weight.data)
+            if self.q_proj.bias is not None:
+                self.q_proj_s.bias.data.copy_(self.q_proj.bias.data)
 
-        # Repeat K, V weights and biases from GQA to MHA
-        if self.num_key_value_groups > 1:
-            # Repeat K
-            gqa_k_weights = self.k_proj.weight.data
-            self.k_proj_s.weight.data.copy_(gqa_k_weights.repeat(self.num_key_value_groups, 1))
-            if self.k_proj.bias is not None:
-                gqa_k_bias = self.k_proj.bias.data
-                self.k_proj_s.bias.data.copy_(gqa_k_bias.repeat(self.num_key_value_groups))
+            if self.num_key_value_groups > 1:
+                gqa_k_weights = self.k_proj.weight.data
+                # Reshape to isolate the heads: (num_kv_heads * head_dim, hidden_size) -> (num_kv_heads, head_dim, hidden_size)
+                reshaped_k_weights = gqa_k_weights.view(
+                    self.num_key_value_heads,
+                    self.head_dim,
+                    self.hidden_size
+                )
+                # Repeat each head's weights `num_key_value_groups` times
+                interleaved_k_weights = torch.repeat_interleave(
+                    reshaped_k_weights,
+                    self.num_key_value_groups,
+                    dim=0 # Repeat along the head dimension
+                )
+                # Reshape back to the final 2D matrix shape
+                self.k_proj_s.weight.data.copy_(interleaved_k_weights.view(
+                    self.num_heads * self.head_dim,
+                    self.hidden_size
+                ))
 
-            # Repeat V
-            gqa_v_weights = self.v_proj.weight.data
-            self.v_proj_s.weight.data.copy_(gqa_v_weights.repeat(self.num_key_value_groups, 1))
-            if self.v_proj.bias is not None:
-                gqa_v_bias = self.v_proj.bias.data
-                self.v_proj_s.bias.data.copy_(gqa_v_bias.repeat(self.num_key_value_groups))
-        else: # If it's already MHA, just copy
-            self.k_proj_s.weight.data.copy_(self.k_proj.weight.data)
-            self.v_proj_s.weight.data.copy_(self.v_proj.weight.data)
-            if self.k_proj.bias is not None:
-                self.k_proj_s.bias.data.copy_(self.k_proj.bias.data)
-            if self.v_proj.bias is not None:
-                self.v_proj_s.bias.data.copy_(self.v_proj.bias.data)
+                # K Bias Initialization
+                if self.k_proj.bias is not None:
+                    gqa_k_bias = self.k_proj.bias.data
+                    # Reshape to isolate the heads: (num_kv_heads * head_dim) -> (num_kv_heads, head_dim)
+                    reshaped_k_bias = gqa_k_bias.view(self.num_key_value_heads, self.head_dim)
+                    # Repeat
+                    interleaved_k_bias = torch.repeat_interleave(reshaped_k_bias, self.num_key_value_groups, dim=0)
+                    # Reshape back
+                    self.k_proj_s.bias.data.copy_(interleaved_k_bias.view(self.num_heads * self.head_dim))
 
-        if self.layer_idx == 0:
-            print("Student weights initialized by REPEATING teacher K/V weights!")
+                # V Projection Initialization
+                gqa_v_weights = self.v_proj.weight.data
+                reshaped_v_weights = gqa_v_weights.view(
+                    self.num_key_value_heads,
+                    self.head_dim,
+                    self.hidden_size
+                )
+                interleaved_v_weights = torch.repeat_interleave(
+                    reshaped_v_weights,
+                    self.num_key_value_groups,
+                    dim=0
+                )
+                self.v_proj_s.weight.data.copy_(interleaved_v_weights.view(
+                    self.num_heads * self.head_dim,
+                    self.hidden_size
+                ))
+                
+                if self.v_proj.bias is not None:
+                    gqa_v_bias = self.v_proj.bias.data
+                    reshaped_v_bias = gqa_v_bias.view(self.num_key_value_heads, self.head_dim)
+                    interleaved_v_bias = torch.repeat_interleave(reshaped_v_bias, self.num_key_value_groups, dim=0)
+                    self.v_proj_s.bias.data.copy_(interleaved_v_bias.view(self.num_heads * self.head_dim))
 
+            else: # If it's already MHA (groups = 1), just copy
+                self.k_proj_s.weight.data.copy_(self.k_proj.weight.data)
+                self.v_proj_s.weight.data.copy_(self.v_proj.weight.data)
+                if self.k_proj.bias is not None:
+                    self.k_proj_s.bias.data.copy_(self.k_proj.bias.data)
+                if self.v_proj.bias is not None:
+                    self.v_proj_s.bias.data.copy_(self.v_proj.bias.data)
+
+            if self.layer_idx == 0:
+                print("Student weights initialized by INTERLEAVING teacher K/V weights!")
 
     def destroy_teacher_weights(self):
 
