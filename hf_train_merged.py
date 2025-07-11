@@ -204,10 +204,10 @@ def main(cfg):
 
     if stage == 1:
         print("==== Stage 1 (Attention Transfer) ====")
-        # Student: from base model (with partial freeze or attention replacements)
+        # Student: from base model
         model = build_student_for_stage1(cfg)
-        teacher_model = None       # No teacher in stage 1 or let's rely on DistillTrainer’s attention distill
-        trainer_class = DistillTrainer if "distill" in cfg.model.name else FinetuneTrainer
+        trainer_class = DistillTrainer
+        ds_config_path = os.path.join(os.getcwd(), "ds_config_1.json")
 
     elif stage == 2:
         import torch.nn.functional as F
