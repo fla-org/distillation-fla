@@ -10,66 +10,6 @@ from hf_trainer import DistillTrainer, FinetuneTrainer, KDTrainer
 
 from transformers import TrainerCallback, TrainingArguments, TrainerState, TrainerControl
 
-class SaveAtStep0Callback(TrainerCallback):
-    """
-    A callback that saves the model at step 0 and then stops training.
-    This version expects the trainer to be attached to it after initialization.
-    """
-    def __init__(self):
-        super().__init__()
-        self.trainer = None # Initialize trainer attribute
-
-    def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        """
-        Event called at the very beginning of training.
-        """
-        if self.trainer is None:
-            # Safety check
-            raise ValueError("Trainer instance was not attached to the callback.")
-
-        print("--- Callback: Saving model at Step 0... ---")
-        
-        # Define the output directory
-        output_dir = os.path.join(args.output_dir, "checkpoint-0")
-        
-        # Use the attached trainer's save function
-        self.trainer.save_model(output_dir)
-        
-        print(f"--- Model saved to {output_dir}. Halting training. ---")
-        
-        # Set the flag to stop training
-        control.should_training_stop = True
-        
-        return control
-
-
-def measure_gpu_memory(model, label="Model"):
-    """
-    Measures the GPU memory footprint of a given model more accurately.
-    """
-    if not torch.cuda.is_available():
-        print(f"{label}: CUDA not available, cannot measure GPU memory.")
-        return
-
-    # 1. Clear the cache BEFORE the measurement to get a clean slate.
-    torch.cuda.empty_cache()
-
-    # 2. Get a baseline memory reading.
-    mem_before = torch.cuda.memory_allocated() / 1024**2  # in MB
-
-    # 3. Move model to GPU
-    model.to("cuda")
-
-    # 4. Get the memory reading AFTER loading the model.
-    mem_after = torch.cuda.memory_allocated() / 1024**2  # in MB
-
-    # 5. The model's footprint is the difference.
-    model_mem = mem_after - mem_before
-    print(f"[{label}] GPU Memory Allocated: {model_mem:,.2f} MB (Total: {mem_after:,.2f} MB)")
-
-    # 6. Move model back to CPU and clear cache for the next measurement.
-    model.to("cpu")
-    torch.cuda.empty_cache()
 
 def parse_config(path: str):
     with open(path) as f:
@@ -130,9 +70,6 @@ def build_student_for_stage1(cfg):
         torch_dtype=torch.bfloat16
     )
 
-
-    # e.g. your custom method for “student init”
-    # If you are extending huggingface, you might have a method:
     model.init_student_weights()
 
     if cfg.stage == 2:
@@ -140,7 +77,7 @@ def build_student_for_stage1(cfg):
 
     # Freeze or unfreeze as needed
     for name, p in model.named_parameters():
-        # Example: allow Q/K/V projection to be trainable if wanted
+        # allow Q/K/V projection to be trainable
         p.requires_grad = any(k in name for k in ("q_proj_s", "k_proj_s", "v_proj_s", "o_proj_s"))
 
     tr, tot = count_model_params(model, True), count_model_params(model, False)
@@ -241,19 +178,18 @@ def build_model_for_stage3(cfg):
     tr, tot = count_model_params(model, True), count_model_params(model, False)
     print(f"[Stage 3] Model Ready for Finetuning: Trainable = {tr/1e6:.1f}M | Total = {tot/1e6:.1f}M ({tr/tot:.2%})")
     
-    # # Optional: Verify that the weights are no longer unused.
-    # # The warning should disappear, but you can also manually check a parameter.
-    # try:
-    #     # This should now exist and not be None
-    #     _ = model.model.layers[0].self_attn.q_proj_s
-    #     print("✅ Verification successful: `q_proj_s` layer exists in the loaded model.")
-    # except AttributeError:
-    #     print("❌ Verification FAILED: `q_proj_s` layer not found.")
+    # Optional: Verify that the weights are no longer unused.
+    try:
+        # This should now exist and not be None
+        _ = model.model.layers[0].self_attn.q_proj_s
+        print("✅ Verification successful: `q_proj_s` layer exists in the loaded model.")
+    except AttributeError:
+        print("❌ Verification FAILED: `q_proj_s` layer not found.")
 
     return model
 
 
-def main(cfg, measure_memory=False):
+def main(cfg):
     tokenizer = AutoTokenizer.from_pretrained(
         cfg.model.pretrained_model_name_or_path,
         padding_side="left"
@@ -273,9 +209,6 @@ def main(cfg, measure_memory=False):
         teacher_model = None       # No teacher in stage 1 or let's rely on DistillTrainer’s attention distill
         trainer_class = DistillTrainer if "distill" in cfg.model.name else FinetuneTrainer
 
-        if measure_memory:
-            measure_gpu_memory(model, "Stage 1 Student")
-
     elif stage == 2:
         import torch.nn.functional as F
         print("==== Stage 2 (Logit Distillation) ====")
@@ -287,11 +220,6 @@ def main(cfg, measure_memory=False):
 
         ds_config_path = os.path.join(os.getcwd(), "ds_config_2.json")
 
-        if measure_memory:
-            measure_gpu_memory(model, "Stage 2 Student")
-            # For DeepSpeed-sharded teacher, this will measure the shard on the current device
-            measure_gpu_memory(teacher_model, "Teacher Model")
-
     elif stage == 3:
         print("==== Stage 3 (Long-Context Finetuning) ====")
         # Student is the checkpoint saved by stage 2
@@ -300,8 +228,6 @@ def main(cfg, measure_memory=False):
         teacher_model = None
         # Use the standard fine-tuning trainer
         trainer_class = FinetuneTrainer
-        if measure_memory:
-            measure_gpu_memory(model, "Stage 3 Model")
 
         ds_config_path = os.path.join(os.getcwd(), "ds_config_3.json")
 
@@ -358,10 +284,6 @@ def main(cfg, measure_memory=False):
         "tokenizer": tokenizer,
     }
 
-    # save_at_step_0_callback = SaveAtStep0Callback()
-
-    # trainer_kwargs["callbacks"] = [save_at_step_0_callback]
-
     if stage == 1:
         trainer_kwargs["mse_factor"] = 1.0 # Or from cfg
         trainer = DistillTrainer(**trainer_kwargs)
@@ -373,9 +295,6 @@ def main(cfg, measure_memory=False):
     elif stage == 3:
         # FinetuneTrainer takes no extra args from this list
         trainer = FinetuneTrainer(**trainer_kwargs)
-
-    # save_at_step_0_callback.trainer = trainer
-        
 
     # 7. Train
     trainer.train(resume_from_checkpoint=None)
@@ -389,7 +308,6 @@ def main(cfg, measure_memory=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg", required=True, help="Path to YAML config")
-    parser.add_argument("--measure_memory", action="store_true", help="Measure GPU memory of models")
     parser.add_argument("--local_rank", type=int, default=0)
     args = parser.parse_args()
 
@@ -398,7 +316,7 @@ if __name__ == "__main__":
 
     # Make sure your config has something like:
     # train:
-    #   stage: 1  (or 2)
+    #   stage: 1  (1, 2 or 3)
     # or pass it another way if you prefer.
 
-    main(cfg, args.measure_memory)
+    main(cfg)
