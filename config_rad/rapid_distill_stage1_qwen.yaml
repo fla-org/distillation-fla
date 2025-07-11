@@ -28,3 +28,5 @@ train:
   train_qk_lora: False
   train_v: False
   train_v_lora: False
+
+stage: 1
