@@ -1,9 +1,3 @@
-Of course. Here are the revised sections for your README to accurately reflect that your project is a reimplementation of the RADLADS paper.
-
------
-
-### **Revised Introduction**
-
 # Three-Stage Distillation Pipeline
 
 This repository provides a reimplementation of the paper **"RADLADS: Rapid Attention Distillation to Linear Attention Decoders at Scale"** ([arXiv:2505.03005](https://arxiv.org/abs/2505.03005)).
