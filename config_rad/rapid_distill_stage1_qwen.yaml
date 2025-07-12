@@ -29,4 +29,7 @@ train:
   train_v: False
   train_v_lora: False
 
+  # Provide the path of the last checkpoint to resume training
+  resume_from_checkpoint: None
+
 stage: 1

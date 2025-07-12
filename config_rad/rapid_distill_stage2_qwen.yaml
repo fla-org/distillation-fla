@@ -25,6 +25,8 @@ train:
   train_v: False
   train_v_lora: False
   student_init_ckpt: 'checkpoints/rapid_distill_stage1_qwen/default_2000'
+  # Provide the path of the last checkpoint to resume training
+  resume_from_checkpoint: None
 
 distillation:
   # teacher model & kd parameters
