@@ -279,8 +279,11 @@ class LigerQwen2GatedLinearAttention(nn.Module):
                                                     output_attentions, use_cache, cache_position, position_embeddings, **kwargs)
             o_student, _, past_key_value = self.forward_student(hidden_states, attention_mask, position_ids, past_key_value,
                                                 output_attentions, use_cache, cache_position, position_embeddings, **kwargs)
-            # hack attention outputs
-            return o_teacher, (o_teacher, o_student), past_key_value
+            # calculate the loss directly inside the module
+            special_attn_loss = torch.linalg.vector_norm(o_teacher - o_student, dim=-1).mean() * (o_teacher.size(-1) ** -0.5)
+
+            # Return the teacher's output, the distillation loss, and the cache
+            return o_teacher, special_attn_loss, past_key_value
 
         # Else, we are in Stage 2 mode (teacher weights have been destroyed)
         else:

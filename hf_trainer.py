@@ -33,22 +33,22 @@ class DistillTrainer(_BaseTrainer):
         inputs = {k: v.to(model.device) for k, v in inputs.items() if k != "labels"}
 
         outputs = model(**inputs, output_attentions=True)
-        attentions = outputs.attentions          # tuple[#layers][2, B, H, L, L]
 
-        loss_mse = 0.0
-        n_layers = 0
-        all_diffs = []
-        for teacher_hidden_states, student_hidden_states in attentions:
-            diff = teacher_hidden_states - student_hidden_states
-            all_diffs.append(diff)
-        if all_diffs:
-            concat_diff = torch.cat(all_diffs, dim=0)
-            loss_mse = torch.linalg.vector_norm(concat_diff, dim=-1).mean() * (concat_diff.size(-1) ** -0.5) * self.mse_factor
+        # 'attentions' is now a simple tuple of pre-computed loss tensors from each layer
+        per_layer_losses = outputs.attentions
+
+        # The total loss is just the mean of the per-layer losses.
+        # Stack them into a single tensor and calculate the mean.
+        if per_layer_losses:
+            loss = torch.stack(per_layer_losses).mean() * self.mse_factor
+        else:
+            loss = torch.tensor(0.0, device=model.device, requires_grad=True)
+
         if return_outputs:
-            extra = {"loss_mse": loss_mse.detach().cpu().item(),
+            extra = {"loss_mse": loss.detach().cpu().item(),
                      "mse_factor": self.mse_factor}
-            return (loss_mse, {**outputs, **extra})
-        return loss_mse
+            return (loss, {**outputs, **extra})
+        return loss
 
 
 class FinetuneTrainer(_BaseTrainer):
