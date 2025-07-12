@@ -297,7 +297,10 @@ def main(cfg):
         trainer = FinetuneTrainer(**trainer_kwargs)
 
     # 7. Train
-    trainer.train(resume_from_checkpoint=None)
+    if cfg.train.resume_from_checkpoint == "None":
+        trainer.train(resume_from_checkpoint=None)
+    else:
+        trainer.train(resume_from_checkpoint=cfg.train.resume_from_checkpoint)
 
     # 8. Save final model
     best_dir = os.path.join(training_args.output_dir, "best")
