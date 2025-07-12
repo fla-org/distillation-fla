@@ -11,7 +11,6 @@ Our work implements the **three-stage distillation pipeline** proposed in the pa
 First, clone this repository, making sure to include the submodules.
 
 ```bash
-# TODO: Update with your repository URL
 git clone --recurse-submodules https://github.com/fla-org/distillation-fla.git
 cd distillation-fla
 
