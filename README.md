@@ -1,52 +1,83 @@
-# Liger: Linearizing Large Language Models to Gated Recurrent Structures
+Of course. Here are the revised sections for your README to accurately reflect that your project is a reimplementation of the RADLADS paper.
 
-[![arXiv](https://img.shields.io/badge/Arxiv-2503.01496-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2503.01496)
- [![huggingface weights](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Weights-ffc107?color=ffc107&logoColor=white)](https://huggingface.co/collections/linear-moe-hub/liger-67d904bffd7f9b77ade7747d)
+-----
 
-## Framework
+### **Revised Introduction**
 
-<p align="center">
-  <img src="assets/liger_framework.png" width="90%" />
-</p>
-<div align="center">
-Figure 1: Liger Framework
-</div>
+# Three-Stage Distillation Pipeline
 
-## Environment
+This repository provides a reimplementation of the paper **"RADLADS: Rapid Attention Distillation to Linear Attention Decoders at Scale"** ([arXiv:2505.03005](https://arxiv.org/abs/2505.03005)).
+
+Our work implements the **three-stage distillation pipeline** proposed in the paper, which includes attention output alignment, logits distillation, and continued training on long sequences. This implementation is built upon the foundational codebase of the [Liger](https://github.com/OpenSparseLLMs/Linearization) project.
+
+-----
+
+## Environment Setup
+
+First, clone this repository, making sure to include the submodules.
 
 ```bash
-git clone --recurse-submodules https://github.com/OpenSparseLLMs/Linearization.git
-conda create -n liger python=3.10
-conda activate liger
-pip install -r requirements
+# TODO: Update with your repository URL
+git clone --recurse-submodules https://github.com/fla-org/distillation-fla.git
+cd distillation-fla
+
+# Create and activate conda environment
+conda create -n your_env_name python=3.10
+conda activate your_env_name
+
+# Install dependencies
+pip install -r requirements.txt
+pip install deepspeed==0.15.4
 pip install flash-attn --no-build-isolation
+
+# Install flash-linear-attention
 cd third_party/flash-linear-attention
 pip install -e .
+cd ../..
 ```
 
-## Linearization
+## Training: A Three-Stage Process
 
-1. Copy your pre-trained base model directory (e.g. Meta-Llama-3-8B) to `./checkpoints/`;
-2. Modify the `config` file of the original Llama-3 base model to the `config` file of the Liger model (see `./checkpoints/liger_gla_base/config.json`);
-3. Modify the linearization settings in `./configs/config.yaml ` file (e.g. liger_gla.yaml); 
-4. Run the linearization script:
+Our training process is divided into three distinct stages. You can run each stage using the corresponding configuration file.
+
+### Stage 1: Attention Output Alignment
+
+This initial stage focuses on aligning the attention outputs of the model.
 
 ```bash
-sh scripts/train_liger.sh
+deepspeed hf_train_merged.py --cfg config_rad/rapid_distill_stage1_qwen.yaml
+```
+
+### Stage 2: Logits Distillation
+
+In the second stage, we perform knowledge distillation on the model's logits to transfer capabilities from a teacher model.
+
+```bash
+deepspeed hf_train_merged.py --cfg config_rad/rapid_distill_stage2_qwen.yaml
+```
+
+### Stage 3: Continued Training on Longer Sequences
+
+The final stage involves continuing the training on longer sequence lengths to enhance the model's performance on extended contexts.
+
+```bash
+deepspeed hf_train_merged.py --cfg config_rad/rapid_distill_stage3_qwen.yaml
 ```
 
 ## Evaluation
 
-You need to install [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) for evaluation:
+Evaluation is performed using the [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness). First, ensure it is installed:
 
-```
+```bash
 cd third_party/lm-evaluation-harness
 pip install -e .
 ```
 
+Then, run the evaluation script. The example below shows how to evaluate a base model with a LoRA adapter.
+
 ```bash
 python -m eval.harness --model hf \
-    --model_args pretrained=/your/Liger/checkpoints/liger_base_model,peft=/your/Liger/checkpoints/lora_adapter_path \
+    --model_args pretrained=/your/checkpoints/base_model,peft=/your/checkpoints/lora_adapter_path \
     --tasks piqa,arc_easy,arc_challenge,hellaswag,winogrande \
     --batch_size 64 \
     --device cuda \
@@ -55,11 +86,33 @@ python -m eval.harness --model hf \
 
 ## Acknowledgements
 
-We use the triton-implemented linear attention kernels from [fla-org/flash-linear-attention](https://github.com/fla-org/flash-linear-attention). We refer to [HazyResearch/lolcats](https://github.com/HazyResearch/lolcats) to construct our linearization training processs. The evaluation is supported by [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness). Sincerely thank their contributions!
+This work is built upon the foundational [Liger](https://github.com/OpenSparseLLMs/Linearization) project. We extend our sincere gratitude to the original authors for their significant contributions.
+
+We also use the triton-implemented linear attention kernels from [fla-org/flash-linear-attention](https://github.com/fla-org/flash-linear-attention). We refer to [HazyResearch/lolcats](https://github.com/HazyResearch/lolcats) to construct our training process. The evaluation is supported by [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness). Thank you for these excellent open-source efforts.
 
 ## Citation
 
-If you find this repo useful, please cite and star our work:
+If you use this work, please cite the original Liger paper. We also encourage you to cite this repository if it has been helpful to your research.
+
+## Citation
+
+If you use this work, please cite the original RADLADS paper that proposed this methodology. As our codebase is built upon Liger, we also recommend citing their work.
+
+**Primary Method (RADLADS):**
+
+```bibtex
+@misc{goldstein2025radladsrapidattentiondistillation,
+      title={RADLADS: Rapid Attention Distillation to Linear Attention Decoders at Scale}, 
+      author={Daniel Goldstein and Eric Alcaide and Janna Lu and Eugene Cheah},
+      year={2025},
+      eprint={2505.03005},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2505.03005}, 
+}
+```
+
+**Base Codebase (Liger):**
 
 ```bibtex
 @article{lan2025liger,
