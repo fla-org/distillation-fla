@@ -1,4 +1,4 @@
-import argparse, os, yaml, math, torch
+import argparse, os, yaml, math, torch, importlib
 import json
 import deepspeed
 from transformers import (AutoConfig, AutoTokenizer, AutoModelForCausalLM,
@@ -14,6 +14,30 @@ from transformers import TrainerCallback, TrainingArguments, TrainerState, Train
 def parse_config(path: str):
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def get_model_config_class(model_name: str):
+    """
+    Dynamically imports and returns the correct model config class
+    based on the model name.
+    """
+    # Map model names to their full class import paths
+    MODEL_CONFIG_MAP = {
+        "qwen2": "lolcats.models.rapid_distill_stage_1_qwen.LigerQwen2GLAConfig",
+        "qwen3": "lolcats.models.rapid_distill_qwen3.LigerQwen3GLAConfig"
+        # Add other models here in the future
+        # "new_model": "path.to.new.ModelConfig"
+    }
+
+    if model_name not in MODEL_CONFIG_MAP:
+        raise ValueError(f"Unknown model name: {model_name}. Please add it to MODEL_CONFIG_MAP.")
+
+    # Dynamically import the module and get the class
+    module_path, class_name = MODEL_CONFIG_MAP[model_name].rsplit('.', 1)
+    module = importlib.import_module(module_path)
+    config_class = getattr(module, class_name)
+    
+    return config_class
 
 
 def _prepare_teacher_deepspeed(teacher_model, ds_config_path):
@@ -59,7 +83,7 @@ def build_student_for_stage1(cfg):
     """
     base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
 
-    from lolcats.models.rapid_distill_stage_1_qwen import LigerQwen2GLAConfig as LC
+    LC = get_model_config_class(cfg.model.name)
     lg_cfg = LC()
     lg_cfg.__dict__.update(base_cfg.__dict__)
     base_cfg = lg_cfg
@@ -93,14 +117,11 @@ def build_student_for_stage2(cfg):
     # CRITICAL: Load the custom config so AutoModel knows which class to use.
     # We use the base model's config and update our custom one, just like in stage 1.
     base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
-    if cfg.model.name.startswith("rapid_distill_stage"): # Make this check more general
-        # TODO: change name
-        from lolcats.models.rapid_distill_stage_1_qwen import LigerQwen2GLAConfig as LC
-        lg_cfg = LC()
-        lg_cfg.__dict__.update(base_cfg.__dict__)
-        model_config = lg_cfg
-    else:
-        model_config = base_cfg
+
+    LC = get_model_config_class(cfg.model.name)
+    lg_cfg = LC()
+    lg_cfg.__dict__.update(base_cfg.__dict__)
+    model_config = lg_cfg
         
     student_stage1_path = cfg.train.student_init_ckpt # Use the correct key from your YAML
 
@@ -156,7 +177,7 @@ def build_model_for_stage3(cfg):
 
     base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
 
-    from lolcats.models.rapid_distill_stage_1_qwen import LigerQwen2GLAConfig as LC
+    LC = get_model_config_class(cfg.model.name)
     lg_cfg = LC()
     lg_cfg.__dict__.update(base_cfg.__dict__)
     model_config = lg_cfg

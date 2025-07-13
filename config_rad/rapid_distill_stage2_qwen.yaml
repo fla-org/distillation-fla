@@ -6,7 +6,7 @@ data:
   val_set_size: 200
 
 model:
-  name: 'rapid_distill_stage_2_qwen'
+  name: 'qwen2'
   pretrained_model_name_or_path: 'Qwen/Qwen2.5-7B-Instruct'
   max_length: 512
 
