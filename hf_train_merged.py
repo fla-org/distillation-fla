@@ -21,10 +21,11 @@ def get_model_config_class(model_name: str):
     Dynamically imports and returns the correct model config class
     based on the model name.
     """
+    
     # Map model names to their full class import paths
     MODEL_CONFIG_MAP = {
         "qwen2": "lolcats.models.rapid_distill_stage_1_qwen.LigerQwen2GLAConfig",
-        "qwen3": "lolcats.models.rapid_distill_qwen3.LigerQwen3GLAConfig"
+        "qwen3_gla": "lolcats.models.rapid_distill_qwen3_gla.LigerQwen3GLAConfig"
         # Add other models here in the future
         # "new_model": "path.to.new.ModelConfig"
     }
@@ -280,7 +281,7 @@ def main(cfg):
         learning_rate               = cfg.train.lr,
         bf16                        = True,
         logging_steps               = 10,
-        evaluation_strategy         = "steps" if cfg.data.val_set_size > 0 else "no",
+        eval_strategy               = "steps" if cfg.data.val_set_size > 0 else "no",
         eval_steps                  = 50,
         save_steps                  = 200,
         save_total_limit            = 10000,
