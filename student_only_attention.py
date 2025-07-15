@@ -16,8 +16,7 @@ except ImportError:
 
 class LigerQwen3GatedLinearAttentionStudent(nn.Module):
     """
-    Pure‑student GLA block that **also uses GQA**
-    (num_key_value_heads < num_attention_heads).
+    Pure‑student GLA block.
     """
     def __init__(self, config, layer_idx: int):
         super().__init__()
@@ -34,13 +33,13 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
         self.window_size   = 64
 
         # projections 
-        self.q_proj_s = nn.Linear(self.hidden_size,
+        self.q_proj = nn.Linear(self.hidden_size,
                                   self.num_heads * self.head_dim,  bias=True)
-        self.k_proj_s = nn.Linear(self.hidden_size,
+        self.k_proj = nn.Linear(self.hidden_size,
                                   self.num_kv_heads * self.head_dim, bias=True)
-        self.v_proj_s = nn.Linear(self.hidden_size,
+        self.v_proj = nn.Linear(self.hidden_size,
                                   self.num_kv_heads * self.head_dim, bias=True)
-        self.o_proj_s = nn.Linear(self.num_heads * self.head_dim,
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim,
                                   self.hidden_size, bias=False)
 
         # rotary + gate helpers
@@ -72,9 +71,9 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
     ):
 
         cu_seqlens = None  # placeholder
-        q = self.q_proj_s(hidden_states)
-        k = self.k_proj_s(hidden_states)
-        v = self.v_proj_s(hidden_states)
+        q = self.q_proj(hidden_states)
+        k = self.k_proj(hidden_states)
+        v = self.v_proj(hidden_states)
         gk = self.pool_g(k)
 
         batch_size, q_len, _ = hidden_states.size()
@@ -97,10 +96,10 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
 
         kv_groups = self.num_heads // self.num_kv_heads
 
-        # ────────────────────────────────────────────────────────────────
-        # keep *original* H_kv heads for GLA and replicate to H heads
-        # for Flash‑Attention
-        # ────────────────────────────────────────────────────────────────
+        q = F.softmax(q.float(), dim=-1).to(v)
+        k = F.softmax(k.float(), dim=-1).to(v)
+
+
         k_gla, v_gla, gk_gla = k, v, gk                          # (B,L,H_kv,…)
         k_rep = repeat_kv(k, kv_groups)                          # (B,L,H,D)
         v_rep = repeat_kv(v, kv_groups)
@@ -111,8 +110,6 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
         gk_gla_full = gk_gla.repeat_interleave(kv_groups, dim=2)     # (B, L, H, m)
     
         sq, sk, sv = q, k, v
-        q = F.softmax(q.float(), dim=-1).to(v)
-        k = F.softmax(k.float(), dim=-1).to(v)
 
         gate_logit_normalizer = 16
         gk = F.logsigmoid(gk.float()) / gate_logit_normalizer
@@ -214,9 +211,9 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
         # ---- harmonise head‑count BEFORE mixing (tile H_kv → H) --------
         if o_.shape[2] != y.shape[2]:                 # 8 → 32
             o_ = repeat_kv(o_, kv_groups)             # (B, L, H, D)
-        
+
         o_ = 0.5 * y + 0.5 * o_
         o  = rearrange(o_, 'b n h d -> b n (h d)').to(hidden_states.dtype)
-        o  = self.o_proj_s(o)
+        o  = self.o_proj(o)
 
         return o, None   # (hidden_states, self_attn_weights)
