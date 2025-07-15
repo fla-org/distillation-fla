@@ -1,4 +1,4 @@
-# hf_trainer.py
+# hf_trainer_copy.py
 from __future__ import annotations
 import torch
 import torch.nn as nn
@@ -26,30 +26,9 @@ class DistillTrainer(_BaseTrainer):
     """
     Stage‑1 trainer used by rapid‑distill / LoLCats‑AT etc.
     Assumes the model.forward(..) returns a tuple of attentions where
-    `attn[layer][0]` is the *teacher* map and `attn[layer][1]` is the *student* map.
+    `attn[layer][0]` is the *teacher* map and `attn[layer][1]` is the *student* map.
     """
     def compute_loss(self, model, inputs, num_items_in_batch=None, return_outputs=False):
-    #     # Strip labels – we only need hidden states / attentions
-    #     inputs = {k: v.to(model.device) for k, v in inputs.items() if k != "labels"}
-
-    #     outputs = model(**inputs, output_attentions=True)
-
-    #     # 'attentions' is now a simple tuple of pre-computed loss tensors from each layer
-    #     per_layer_losses = outputs.attentions
-
-    #     # The total loss is just the mean of the per-layer losses.
-    #     # Stack them into a single tensor and calculate the mean.
-    #     if per_layer_losses:
-    #         loss = torch.stack(per_layer_losses).mean() * self.mse_factor
-    #     else:
-    #         loss = torch.tensor(0.0, device=model.device, requires_grad=True)
-
-    #     if return_outputs:
-    #         extra = {"loss_mse": loss.detach().cpu().item(),
-    #                  "mse_factor": self.mse_factor}
-    #         return (loss, {**outputs, **extra})
-    #     return loss
-
         # ────────────────────────────────────────────────
         # 1) forward pass (no attentions needed anymore)
         # ────────────────────────────────────────────────
@@ -79,7 +58,6 @@ class DistillTrainer(_BaseTrainer):
                      "mse_factor": self.mse_factor}
             return loss, {**outputs, **extra}
         return loss
-
 
 class FinetuneTrainer(_BaseTrainer):
     """
