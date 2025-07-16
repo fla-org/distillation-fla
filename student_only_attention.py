@@ -148,6 +148,7 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
                 )
                 o_ = pad_input(o_.squeeze(0), indices_q, batch_size, q_len)
             else:
+                breakpoint()
                 o_, recurrent_state = chunk_gla(
                     q, k_gla_full, v_gla_full, gk_gla_full, scale=scale,
                     initial_state=recurrent_state, output_final_state=True)
@@ -155,10 +156,6 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
             o_, recurrent_state = fused_recurrent_gla(
                 q, k_gla, v_gla, gk_gla, scale=scale,
                 initial_state=recurrent_state, output_final_state=True)
-
-        if o_.shape[1] == q_len * kv_groups and o_.shape[2] == self.num_kv_heads:
-            # (B, L·G, H_kv, D) → (B, L, H, D)
-            o_ = rearrange(o_, 'b (n g) hkv d -> b n (g hkv) d', g=kv_groups)
 
         if past_key_value is not None:
             past_key_value.update(
