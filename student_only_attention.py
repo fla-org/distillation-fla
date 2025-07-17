@@ -76,6 +76,9 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
         v = self.v_proj(hidden_states)
         gk = self.pool_g(k)
 
+        gate_logit_normalizer = 16
+        gk = F.logsigmoid(gk.float()) / gate_logit_normalizer
+
         batch_size, q_len, _ = hidden_states.size()
         seqlen_offset, max_seqlen = 0, q_len
         if past_key_value is not None:
@@ -111,9 +114,6 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
     
         sq, sk, sv = q, k, v
 
-        gate_logit_normalizer = 16
-        gk = F.logsigmoid(gk.float()) / gate_logit_normalizer
-
         recurrent_state = None
         if past_key_value is not None and len(past_key_value) > self.layer_idx:
             k_cached, v_cached = past_key_value[self.layer_idx]
@@ -148,7 +148,6 @@ class LigerQwen3GatedLinearAttentionStudent(nn.Module):
                 )
                 o_ = pad_input(o_.squeeze(0), indices_q, batch_size, q_len)
             else:
-                breakpoint()
                 o_, recurrent_state = chunk_gla(
                     q, k_gla_full, v_gla_full, gk_gla_full, scale=scale,
                     initial_state=recurrent_state, output_final_state=True)
