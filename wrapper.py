@@ -33,4 +33,4 @@ class AttentionDistillationWrapper(nn.Module):
         ).mean() * t_hidden.size(-1) ** -0.5
 
         # ONLY return (hidden_states, attn_weights/None)
-        return s_hidden, None
+        return t_hidden, None
