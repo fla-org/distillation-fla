@@ -10,7 +10,7 @@ from training.utils import count_model_params, get_optimizer_and_scheduler
 from hf_trainer_copy import DistillTrainer, FinetuneTrainer, KDTrainer
 
 from transformers import TrainerCallback, TrainingArguments, TrainerState, TrainerControl
-from student_only_attention import LigerQwen3GatedLinearAttentionStudent
+from student_only_attention import LigerQwen3GatedLinearAttentionStudent, LigerQwen2GatedLinearAttentionStudent
 from wrapper import AttentionDistillationWrapper
 
 def parse_config(path: str):
@@ -86,7 +86,7 @@ def patch_model_for_stage1(model, config):
         teacher_attn = layer.self_attn                # original object
         wrapper = AttentionDistillationWrapper(
             teacher_attn,
-            LigerQwen3GatedLinearAttentionStudent,
+            LigerQwen2GatedLinearAttentionStudent,
             config,
             idx
         )
