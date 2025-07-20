@@ -42,6 +42,29 @@ def get_model_config_class(model_name: str):
     
     return config_class
 
+def get_student_attention_class(model_name: str):
+    """
+    Dynamically imports and returns the correct student attention class
+    based on the model name from the config.
+    """
+    # Map model names to their student attention class import paths
+    STUDENT_ATTENTION_MAP = {
+        "qwen2_gla": "student_only_attention.LigerQwen2GatedLinearAttentionStudent",
+        "qwen3_gla": "student_only_attention.LigerQwen3GatedLinearAttentionStudent"
+        # Add other attention layers for future models here
+        # "new_model_attention_type": "path.to.new.AttentionStudent"
+    }
+
+    if model_name not in STUDENT_ATTENTION_MAP:
+        raise ValueError(f"Unknown student attention for model name: {model_name}. Please add it to STUDENT_ATTENTION_MAP.")
+
+    # Dynamically import the module and get the class
+    module_path, class_name = STUDENT_ATTENTION_MAP[model_name].rsplit('.', 1)
+    module = importlib.import_module(module_path)
+    attention_class = getattr(module, class_name)
+    
+    return attention_class
+
 
 def _prepare_teacher_deepspeed(teacher_model, ds_config_path):
     """
@@ -77,31 +100,24 @@ def _prepare_teacher_deepspeed(teacher_model, ds_config_path):
     teacher_engine.eval()
     return teacher_engine
 
-def patch_model_for_stage1(model, config):
+def patch_model_for_stage1(model, base_model_cfg, cfg):
     """
     Replace `layer.self_attn` with a wrapper so the teacher’s
     hidden states still drive the rest of the frozen network.
     """
+    # Get the correct student attention class dynamically
+    student_attn_class = get_student_attention_class(cfg.model.name)
+    print(f"✅ Using student attention class: {student_attn_class.__name__}")
+
     for idx, layer in enumerate(model.model.layers):
-        teacher_attn = layer.self_attn                # original object
+        teacher_attn = layer.self_attn
         wrapper = AttentionDistillationWrapper(
             teacher_attn,
-            LigerQwen2GatedLinearAttentionStudent,
-            config,
+            student_attn_class,
+            base_model_cfg,
             idx
         )
         layer.self_attn = wrapper
-
-def convert_ckpt_stage1_to_stage2(path, config):
-    model = AutoModelForCausalLM.from_pretrained(path, config=config,
-                                                 torch_dtype=torch.bfloat16)
-
-    # unwrap: keep only .student_attn, drop teacher
-    for layer in model.model.layers:
-        if isinstance(layer.self_attn, AttentionDistillationWrapper):
-            layer.self_attn = layer.self_attn.student_attn
-    return model
-
 
 def build_student_for_stage1(cfg):
     """
@@ -109,17 +125,17 @@ def build_student_for_stage1(cfg):
     Typically we load from the base model and selectively unfreeze Q/K/V or
     additional trainable layers.
     """
-    base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
+    base_model_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
 
     # build the base model first
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model.pretrained_model_name_or_path,
-        config=base_cfg,
+        config=base_model_cfg,
         torch_dtype=torch.bfloat16,
     )
 
     # patch each layer with (teacher → wrapper → student)
-    patch_model_for_stage1(model, base_cfg)
+    patch_model_for_stage1(model, base_model_cfg, cfg)
 
     # freeze everything that is NOT inside .student_attn.
     for name, p in model.named_parameters():
@@ -129,43 +145,89 @@ def build_student_for_stage1(cfg):
     print(f"Trainable = {tr/1e6:.1f}M | Total = {tot/1e6:.1f}M ({tr/tot:.2%})")
     return model
 
-
 def build_student_for_stage2(cfg):
     """
     Build the stage 2 student by loading the checkpoint from stage 1,
-    then destroying the redundant teacher weights to save memory.
+    purifying it by removing the teacher wrapper, and preparing it for
+    knowledge distillation.
     """
-    # CRITICAL: Load the custom config so AutoModel knows which class to use.
-    # We use the base model's config and update our custom one, just like in stage 1.
-    base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
+    stage1_ckpt_path = cfg.train.student_init_ckpt # Path to Stage 1 output
+    print(f"Purifying Stage 1 checkpoint from: {stage1_ckpt_path}")
 
-    LC = get_model_config_class(cfg.model.name)
-    lg_cfg = LC()
-    lg_cfg.__dict__.update(base_cfg.__dict__)
-    model_config = lg_cfg
-        
-    student_stage1_path = cfg.train.student_init_ckpt # Use the correct key from your YAML
+    # 1. Load the base model configuration.
+    config = AutoConfig.from_pretrained(stage1_ckpt_path, trust_remote_code=True)
+    
+    # Get the specific student attention class needed
+    student_attn_class = get_student_attention_class(cfg.model.name)
+    print(f"✅ Building clean student model with attention class: {student_attn_class.__name__}")
 
-    print(f"Loading Stage 1 student from: {student_stage1_path}")
-    model = AutoModelForCausalLM.from_pretrained(
-        student_stage1_path,
-        config=model_config, # Use the custom config
-        torch_dtype=torch.bfloat16
-    )
-    print(f"[DEBUG] Model loaded in training script is of type: {type(model)}")
+    # 2. Build the clean student model structure on a "meta" device.
+    try:
+        from accelerate import init_empty_weights
+        from safetensors.torch import load_file
+    except ImportError:
+        raise ImportError("Please install accelerate & safetensors (`pip install accelerate safetensors`) to use this script.")
 
-    # After loading, purify the model by destroying the unneeded teacher weights!!!!
-    if hasattr(model, "destroy_teacher_weights"):
-        model.destroy_teacher_weights()
+    with init_empty_weights():
+        # Create a model with the final student architecture (no wrappers)
+        student_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+        for idx, layer in enumerate(student_model.model.layers):
+            layer.self_attn = student_attn_class(config, idx)
 
-    # For Stage 2, all parameters of the student should be trainable.
-    for name, p in model.named_parameters():
+    student_model.to_empty(device='cpu')
+    student_model = student_model.to(torch.bfloat16)
+
+    # 3. Load the raw state dictionary from the Stage 1 checkpoint.
+    # This logic correctly handles both sharded and single-file checkpoints.
+    stage1_state_dict = {}
+    index_path = os.path.join(stage1_ckpt_path, 'model.safetensors.index.json')
+    safetensors_path = os.path.join(stage1_ckpt_path, 'model.safetensors')
+    pytorch_bin_path = os.path.join(stage1_ckpt_path, 'pytorch_model.bin')
+
+    if os.path.exists(index_path):
+        print("Detected sharded safetensors checkpoint.")
+        with open(index_path, 'r') as f:
+            index = json.load(f)
+        shard_files = set(index['weight_map'].values())
+        for shard_file in shard_files:
+            shard_path = os.path.join(stage1_ckpt_path, shard_file)
+            stage1_state_dict.update(load_file(shard_path, device="cpu"))
+    elif os.path.exists(safetensors_path):
+        stage1_state_dict = load_file(safetensors_path, device="cpu")
+    elif os.path.exists(pytorch_bin_path):
+        stage1_state_dict = torch.load(pytorch_bin_path, map_location="cpu")
+    else:
+        raise FileNotFoundError(f"Could not find model weights in {stage1_ckpt_path}")
+
+    # 4. Remap weights from the wrapped structure to the clean student structure.
+    purified_state_dict = {}
+    for key, value in stage1_state_dict.items():
+        if ".student_attn." in key:
+            # This is the key transformation: remove the wrapper's prefix
+            new_key = key.replace(".student_attn", "")
+            purified_state_dict[new_key] = value
+        elif ".teacher_attn" not in key:
+            # Keep all other weights (embeddings, MLPs, layer norms, etc.)
+            purified_state_dict[key] = value
+
+    # 5. Load the remapped weights into the clean student model.
+    missing_keys, unexpected_keys = student_model.load_state_dict(purified_state_dict, strict=False)
+    if unexpected_keys:
+        print(f"⚠️ [Warning] Found unexpected keys which were ignored: {unexpected_keys}")
+    if missing_keys:
+        # This would be a critical error
+        raise RuntimeError(f"❌ [ERROR] The student model is missing keys: {missing_keys}")
+
+    print("✅ Stage 1 model successfully purified for Stage 2 training.")
+
+    # 6. For Stage 2, all parameters of the student should be trainable.
+    for name, p in student_model.named_parameters():
         p.requires_grad = True
 
-    tr, tot = count_model_params(model, True), count_model_params(model, False)
+    tr, tot = count_model_params(student_model, True), count_model_params(student_model, False)
     print(f"[Stage 2] Purified Student: Trainable = {tr/1e6:.1f}M | Total = {tot/1e6:.1f}M ({tr/tot:.2%})")
-    return model
 
+    return student_model
 
 def build_teacher_for_stage2(cfg):
     """
@@ -193,41 +255,24 @@ def build_model_for_stage3(cfg):
     Build the student for Stage 3 by loading the final checkpoint from Stage 2.
     This model is already purified and ready for fine-tuning.
     """
-    stage2_ckpt_path = cfg.train.student_init_ckpt
+    stage2_ckpt_path = cfg.train.student_init_ckpt # Path to Stage 2 output
     print(f"Loading Stage 2 model from: {stage2_ckpt_path}")
 
-    base_cfg = AutoConfig.from_pretrained(cfg.model.pretrained_model_name_or_path)
-
-    LC = get_model_config_class(cfg.model.name)
-    lg_cfg = LC()
-    lg_cfg.__dict__.update(base_cfg.__dict__)
-    model_config = lg_cfg
-
+    # Since the Stage 2 model is clean, we can load it directly.
+    # The config saved with the model already knows the correct architecture.
     model = AutoModelForCausalLM.from_pretrained(
         stage2_ckpt_path,
-        config=model_config,
-        torch_dtype=torch.bfloat16
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True # Good practice for custom models
     )
-
-    # After loading, purify the model by destroying the unneeded teacher weights!!!!
-    if hasattr(model, "destroy_teacher_weights"):
-        model.destroy_teacher_weights()
 
     # For Stage 3, all parameters should be trainable for fine-tuning.
     for name, p in model.named_parameters():
         p.requires_grad = True
 
     tr, tot = count_model_params(model, True), count_model_params(model, False)
-    print(f"[Stage 3] Model Ready for Finetuning: Trainable = {tr/1e6:.1f}M | Total = {tot/1e6:.1f}M ({tr/tot:.2%})")
+    print(f"[Stage 3] Model Ready for Finetuning: Trainable = {tr/1e6:.1f}M | Total = {tot/tot:.2%})")
     
-    # Optional: Verify that the weights are no longer unused.
-    try:
-        # This should now exist and not be None
-        _ = model.model.layers[0].self_attn.q_proj_s
-        print("✅ Verification successful: `q_proj_s` layer exists in the loaded model.")
-    except AttributeError:
-        print("❌ Verification FAILED: `q_proj_s` layer not found.")
-
     return model
 
 
@@ -303,7 +348,7 @@ def main(cfg):
         logging_steps               = 10,
         eval_strategy               = "steps" if cfg.data.val_set_size > 0 else "no",
         eval_steps                  = 50,
-        save_steps                  = 200,
+        save_steps                  = 1000,
         save_total_limit            = 10000,
         metric_for_best_model       = "loss",
         greater_is_better           = False,
