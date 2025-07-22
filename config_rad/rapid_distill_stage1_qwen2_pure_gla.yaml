@@ -11,6 +11,7 @@ model:
   # tokenizer
   add_eos_token: False
   # device_map: 'auto'
+  keep_full_attention_layers: [25, 26, 27]
 
 train:
   target_tokens: 100_000_000
@@ -22,7 +23,7 @@ train:
   min_lr: 0.00001
 
   max_grad_norm: 1.0
-  output_dir: 'checkpoints_stage_1_qwen2_pure_gla'
+  output_dir: 'checkpoints_stage_1_qwen2_pure_gla_25_26_27'
 
   train_qk: False
   train_qk_lora: False

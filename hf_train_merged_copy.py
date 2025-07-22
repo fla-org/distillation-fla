@@ -76,16 +76,35 @@ def _prepare_teacher_deepspeed(teacher_model, ds_config_path):
     teacher_engine.eval()
     return teacher_engine
 
+
 def patch_model_for_stage1(model, base_model_cfg, cfg):
     """
     Replace `layer.self_attn` with a wrapper so the teacher’s
     hidden states still drive the rest of the frozen network.
+
+    This version is MODIFIED to keep specified layers as full-attention.
     """
     # Get the correct student attention class dynamically
     student_attn_class = get_student_attention_class(cfg.model.name)
     print(f"✅ Using student attention class: {student_attn_class.__name__}")
 
+    # Get the list of layers to keep as full attention from the config.
+    # Default to an empty list if not specified.
+    keep_full_attention_layers = cfg.model.get('keep_full_attention_layers', [])
+    if keep_full_attention_layers:
+        print(f"⚠️ Will keep the following layers as full-attention: {keep_full_attention_layers}")
+
     for idx, layer in enumerate(model.model.layers):
+        # Conditionally skip patching if the layer index is in our keep list.
+        if idx in keep_full_attention_layers:
+            print(f"  -> Skipping layer {idx}, keeping as full-attention.")
+            # Ensure the kept layer is frozen, as it's not being trained in Stage 1.
+            for param in layer.self_attn.parameters():
+                param.requires_grad_(False)
+            continue
+
+        # The existing logic now only runs for layers NOT in the keep list.
+        print(f"  -> Patching layer {idx} with student attention wrapper.")
         teacher_attn = layer.self_attn
         wrapper = AttentionDistillationWrapper(
             teacher_attn,
@@ -94,7 +113,6 @@ def patch_model_for_stage1(model, base_model_cfg, cfg):
             idx
         )
         layer.self_attn = wrapper
-
 
 def build_student_for_stage1(cfg):
     """
@@ -127,6 +145,9 @@ def build_student_for_stage2(cfg):
     Build the stage 2 student by loading the checkpoint from stage 1,
     purifying it by removing the teacher wrapper, and preparing it for
     knowledge distillation.
+
+    This version is to handle hybrid models with both student
+    and full-attention layers.
     """
     stage1_ckpt_path = cfg.train.student_init_ckpt # Path to Stage 1 output
     print(f"Purifying Stage 1 checkpoint from: {stage1_ckpt_path}")
@@ -138,24 +159,38 @@ def build_student_for_stage2(cfg):
     student_attn_class = get_student_attention_class(cfg.model.name)
     print(f"✅ Building clean student model with attention class: {student_attn_class.__name__}")
 
-    # 2. Build the clean student model structure on a "meta" device.
+    # 2. Build the clean HYBRID student model structure on a "meta" device.
     try:
         from accelerate import init_empty_weights
         from safetensors.torch import load_file
     except ImportError:
         raise ImportError("Please install accelerate & safetensors (`pip install accelerate safetensors`) to use this script.")
+    
+    # Get the list of layers that were kept as full attention.
+    keep_full_attention_layers = cfg.model.get('keep_full_attention_layers', [])
+    if keep_full_attention_layers:
+        print(f"⚠️ Reconstructing hybrid model, keeping layers {keep_full_attention_layers} as full-attention.")
 
     with init_empty_weights():
-        # Create a model with the final student architecture (no wrappers)
+        # First, create a model with the standard architecture (all full-attention).
         student_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+        
+        # --- MODIFICATION START ---
+        # Now, iterate and replace layers that are NOT in the keep list.
         for idx, layer in enumerate(student_model.model.layers):
-            layer.self_attn = student_attn_class(config, idx)
+            if idx in keep_full_attention_layers:
+                print(f"  -> Layer {idx} remains full-attention.")
+                continue
+            else:
+                # This layer should be the student attention type.
+                print(f"  -> Layer {idx} becomes {student_attn_class.__name__}.")
+                layer.self_attn = student_attn_class(config, idx)
+        # --- MODIFICATION END ---
 
     student_model.to_empty(device='cpu')
     student_model = student_model.to(torch.bfloat16)
 
-    # 3. Load the raw state dictionary from the Stage 1 checkpoint.
-    # This logic correctly handles both sharded and single-file checkpoints.
+    # 3. Load the raw state dictionary from the Stage 1 checkpoint (NO CHANGE NEEDED HERE).
     stage1_state_dict = {}
     index_path = os.path.join(stage1_ckpt_path, 'model.safetensors.index.json')
     safetensors_path = os.path.join(stage1_ckpt_path, 'model.safetensors')
@@ -176,28 +211,29 @@ def build_student_for_stage2(cfg):
     else:
         raise FileNotFoundError(f"Could not find model weights in {stage1_ckpt_path}")
 
-    # 4. Remap weights from the wrapped structure to the clean student structure.
+    # 4. Remap weights to the clean student structure (NO CHANGE NEEDED HERE).
+    # This logic is robust. It correctly handles both remapped student weights
+    # and passthrough full-attention weights.
     purified_state_dict = {}
     for key, value in stage1_state_dict.items():
         if ".student_attn." in key:
-            # This is the key transformation: remove the wrapper's prefix
+            # This handles the layers that were converted.
             new_key = key.replace(".student_attn", "")
             purified_state_dict[new_key] = value
         elif ".teacher_attn" not in key:
-            # Keep all other weights (embeddings, MLPs, layer norms, etc.)
+            # This handles MLPs, norms, embeddings, AND the full-attention layers.
             purified_state_dict[key] = value
 
-    # 5. Load the remapped weights into the clean student model.
+    # 5. Load the remapped weights into the clean student model (NO CHANGE NEEDED HERE).
     missing_keys, unexpected_keys = student_model.load_state_dict(purified_state_dict, strict=False)
     if unexpected_keys:
         print(f"⚠️ [Warning] Found unexpected keys which were ignored: {unexpected_keys}")
     if missing_keys:
-        # This would be a critical error
         raise RuntimeError(f"❌ [ERROR] The student model is missing keys: {missing_keys}")
 
-    print("✅ Stage 1 model successfully purified for Stage 2 training.")
+    print("✅ Stage 1 hybrid model successfully purified for Stage 2 training.")
 
-    # 6. For Stage 2, all parameters of the student should be trainable.
+    # 6. For Stage 2, all parameters of the student should be trainable (NO CHANGE NEEDED HERE).
     for name, p in student_model.named_parameters():
         p.requires_grad = True
 
