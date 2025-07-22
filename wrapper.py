@@ -11,12 +11,23 @@ class AttentionDistillationWrapper(nn.Module):
 
         self.student_attn = student_cls(config, layer_idx)
 
+class AttentionDistillationWrapper(nn.Module):
+    def __init__(self, teacher_attn, student_cls, config, layer_idx):
+        super().__init__()
+        self.teacher_attn = teacher_attn.eval()
+        for p in self.teacher_attn.parameters():
+            p.requires_grad_(False)
+
+        self.student_attn = student_cls(config, layer_idx)
+
         # Perform GQA -> MHA weight transplant
         with torch.no_grad():
             # 1. Copy Q and O projections (shapes are compatible)
             self.student_attn.q_proj.weight.data.copy_(self.teacher_attn.q_proj.weight.data)
             self.student_attn.o_proj.weight.data.copy_(self.teacher_attn.o_proj.weight.data)
-            if self.teacher_attn.q_proj.bias is not None:
+            
+            # Check if BOTH teacher and student have bias
+            if self.teacher_attn.q_proj.bias is not None and self.student_attn.q_proj.bias is not None:
                 self.student_attn.q_proj.bias.data.copy_(self.teacher_attn.q_proj.bias.data)
 
             # 2. Get dimensions for GQA->MHA expansion
@@ -31,7 +42,8 @@ class AttentionDistillationWrapper(nn.Module):
             mha_k_weights = torch.repeat_interleave(reshaped_k, num_kv_groups, dim=0)
             self.student_attn.k_proj.weight.data.copy_(mha_k_weights.view_as(self.student_attn.k_proj.weight.data))
 
-            if self.teacher_attn.k_proj.bias is not None:
+            # CORRECTED: Check if BOTH teacher and student have bias
+            if self.teacher_attn.k_proj.bias is not None and self.student_attn.k_proj.bias is not None:
                 gqa_k_bias = self.teacher_attn.k_proj.bias.data
                 reshaped_k_bias = gqa_k_bias.view(num_kv_heads, head_dim)
                 mha_k_bias = torch.repeat_interleave(reshaped_k_bias, num_kv_groups, dim=0)
@@ -43,7 +55,8 @@ class AttentionDistillationWrapper(nn.Module):
             mha_v_weights = torch.repeat_interleave(reshaped_v, num_kv_groups, dim=0)
             self.student_attn.v_proj.weight.data.copy_(mha_v_weights.view_as(self.student_attn.v_proj.weight.data))
 
-            if self.teacher_attn.v_proj.bias is not None:
+            # Check if BOTH teacher and student have bias
+            if self.teacher_attn.v_proj.bias is not None and self.student_attn.v_proj.bias is not None:
                 gqa_v_bias = self.teacher_attn.v_proj.bias.data
                 reshaped_v_bias = gqa_v_bias.view(num_kv_heads, head_dim)
                 mha_v_bias = torch.repeat_interleave(reshaped_v_bias, num_kv_groups, dim=0)

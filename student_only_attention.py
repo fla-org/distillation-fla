@@ -1,23 +1,44 @@
 # student_only_attention.py
-import math, torch, torch.nn as nn, torch.nn.functional as F
-from einops import rearrange
-from typing import Optional, Tuple
-from transformers.models.qwen3.modeling_qwen3 import (
-    Qwen3RotaryEmbedding, repeat_kv, apply_rotary_pos_emb
-)
-from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2RotaryEmbedding,
-    repeat_kv,
-)
-from fla.modules import RotaryEmbedding
-from fla.ops.gla import chunk_gla, fused_recurrent_gla
-from flash_attn import flash_attn_func, flash_attn_varlen_func
-from fla.layers.utils import pad_input, unpad_input
+# -*- coding: utf-8 -*-
+# Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
+# Modifications by user and Gemini
 
+from __future__ import annotations
+
+import math
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange, repeat
+
+# Ensure these imports are available in your environment
+# You might need to install flash-linear-attention (`pip install flash-linear-attention`)
+# and flash-attn (`pip install flash-attn`)
 try:
-    from flash_attn import flash_attn_func
+    from flash_attn import flash_attn_func, flash_attn_varlen_func
 except ImportError:
     flash_attn_func = None
+    flash_attn_varlen_func = None
+
+from fla.layers.utils import get_unpad_data, index_first_axis, pad_input, unpad_input
+from fla.modules import FusedRMSNormGated, RMSNorm, RotaryEmbedding
+from fla.modules.activations import ACT2FN
+from fla.ops.gla import chunk_gla, fused_recurrent_gla
+
+if TYPE_CHECKING:
+    # Assuming `Cache` is a custom class for handling past key-values, similar to HF.
+    from transformers.cache_utils import Cache
+    from transformers.processing_utils import Unpack
+
+# Note: `repeat_kv` was imported from both qwen2 and qwen3. The qwen2 import has been removed.
+from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding
+from transformers.models.qwen3.modeling_qwen3 import (
+    Qwen3RotaryEmbedding,
+    apply_rotary_pos_emb,
+    repeat_kv,
+)
 
 
 class LigerQwen3GatedLinearAttentionStudent(nn.Module):
@@ -330,4 +351,159 @@ class LigerQwen2GatedLinearAttentionStudent(nn.Module):
         o_combined = rearrange(o_combined, "b n h d -> b n (h d)").to(hidden_states.dtype)
         output = self.o_proj(o_combined)
 
+        return output, None
+
+
+class Qwen2GatedLinearAttentionStudent(nn.Module):
+    """
+    Pure-student *Gated Linear Attention* (GLA) block for Qwen-2.
+
+    This version is a revised implementation that mirrors the reference
+    `GatedLinearAttention` from the `flash-linear-attention` library to ensure
+    correctness and full functionality, including batched inference with padding,
+    Grouped-Query Attention (GQA), and the complete GLA mechanism.
+    """
+
+    def __init__(self, config, layer_idx: int):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+
+        # ---- Dims & hyper-params from reference GLA implementation ----
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        # Support for Grouped-Query Attention (GQA)
+        self.num_kv_heads = getattr(config, 'num_key_value_heads', self.num_heads)
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
+
+        # In GLA, key and value dimensions can be configured. We'll set them
+        # to be equivalent to the hidden size per head, similar to a standard MHA.
+        self.key_dim = self.head_dim = config.hidden_size // config.num_attention_heads
+        self.value_dim = self.head_dim
+        
+        # Per-head dimensions
+        self.head_k_dim = self.key_dim
+        self.head_v_dim = self.value_dim
+
+        # ---- Kernel mode selection ----
+        # Use 'fused_recurrent' for generation (seq_len=1) and 'chunk' for training.
+        self.mode = 'chunk'
+
+        # ---- Projections (following GLA reference) ----
+        self.q_proj = nn.Linear(self.hidden_size, self.key_dim * self.num_heads, bias=False)
+        self.k_proj = nn.Linear(self.hidden_size, self.key_dim * self.num_heads, bias=False)
+        self.v_proj = nn.Linear(self.hidden_size, self.value_dim * self.num_heads, bias=False)
+        self.g_proj = nn.Linear(self.hidden_size, self.value_dim * self.num_heads, bias=False)
+        self.o_proj = nn.Linear(self.value_dim * self.num_heads, self.hidden_size, bias=False)
+
+        # ---- Gating mechanism (core of GLA) ----
+        # Low-rank projection for the recurrent gate, as in the reference implementation
+        self.gate_low_rank_dim = 16
+        self.gk_proj = nn.Sequential(
+            nn.Linear(self.hidden_size, self.gate_low_rank_dim, bias=False),
+            nn.Linear(self.gate_low_rank_dim, self.key_dim * self.num_kv_heads, bias=True)
+        )
+        self.gate_logit_normalizer = 16
+
+        # ---- Fused Norm and Gate for efficiency ----
+        self.fuse_norm_and_gate = True
+        self.g_norm_swish_gate = FusedRMSNormGated(
+            hidden_size=self.head_v_dim,
+            eps=config.rms_norm_eps
+        )
+        
+        # This is for compatibility with Hugging Face's `use_cache` argument
+        self._use_cache = False
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        **kwargs: Unpack[Dict]
+    ) -> Tuple[torch.Tensor, None, Optional[Cache]]:
+        self._use_cache = use_cache
+        batch_size, q_len, _ = hidden_states.shape
+        
+        # In generation, sequence length is 1, so fused_recurrent is more efficient.
+        # Otherwise, use the chunk-wise kernel.
+        mode = 'fused_recurrent' if q_len == 1 else self.mode
+
+        # ---- Handle padding for batched inference ----
+        # This is the key part for supporting batched requests with padding.
+        cu_seqlens = None
+        indices = None
+        if attention_mask is not None:
+            # Unpad the input tensor, removing rows that correspond to padding tokens.
+            indices, cu_seqlens, _ = get_unpad_data(attention_mask)
+            hidden_states = index_first_axis(rearrange(hidden_states, "b s ... -> (b s) ..."), indices)
+            # Add a batch dimension of 1 for the unpadded sequence.
+            hidden_states = hidden_states.unsqueeze(0)
+
+        # ---- Projections ----
+        q = self.q_proj(hidden_states)
+        k = self.k_proj(hidden_states)
+        v = self.v_proj(hidden_states)
+        g = self.g_proj(hidden_states)
+        gk = self.gk_proj(hidden_states)
+
+        # ---- Reshape Tensors ----
+        q = rearrange(q, 'b s (h d) -> b s h d', h=self.num_heads)
+        # Reshape k and v with the correct number of heads (MHA)
+        k = rearrange(k, 'b s (h d) -> b s h d', h=self.num_heads)
+        v = rearrange(v, 'b s (h d) -> b s h d', h=self.num_heads)
+        # The gate `gk` still uses GQA dimensions, which is correct
+        gk = rearrange(gk, 'b s (h d) -> b s h d', h=self.num_kv_heads)
+
+        # Only repeat the gate tensor `gk` to match the query heads
+        if self.num_kv_groups > 1:
+            gk = repeat(gk, 'b s h d -> b s (h g) d', g=self.num_kv_groups)
+
+            
+        # ---- Apply Recurrent Gating ----
+        # Normalizes the gate values.
+        gk = F.logsigmoid(gk) / self.gate_logit_normalizer
+
+        # ---- Get KV Cache ----
+        recurrent_state = None
+        if self._use_cache and past_key_value is not None:
+            recurrent_state = past_key_value.get(self.layer_idx)
+
+        # ---- Call the appropriate GLA CUDA kernel ----
+        if mode == 'fused_recurrent':
+            o, recurrent_state = fused_recurrent_gla(
+                q=q, k=k, v=v, gk=gk,
+                initial_state=recurrent_state,
+                output_final_state=self._use_cache
+            )
+        elif mode == 'chunk':
+            o, recurrent_state = chunk_gla(
+                q=q, k=k, v=v, g=gk,
+                initial_state=recurrent_state,
+                output_final_state=self._use_cache,
+                # Pass cumulative sequence lengths for correct handling of batches
+                cu_seqlens=cu_seqlens
+            )
+        else:
+            raise NotImplementedError(f"Mode {mode} is not supported.")
+        
+        # ---- Update KV Cache ----
+        if self._use_cache and past_key_value is not None:
+            past_key_value.update(recurrent_state, self.layer_idx)
+
+        # ---- Output Gating and Projection ----
+        # Fused RMSNorm and SwiGLU-like gate for efficiency
+        g = rearrange(g, 'b s (h d) -> b s h d', h=self.num_heads)
+        o = self.g_norm_swish_gate(o, g)
+        o = rearrange(o, 'b s h d -> b s (h d)')
+        output = self.o_proj(o)
+        
+        # ---- Pad output back to original shape ----
+        if indices is not None:
+            output = pad_input(output.squeeze(0), indices, batch_size, q_len)
+
+        # The second element is for attention weights, which GLA doesn't typically return.
+        # The third is the updated cache, following Hugging Face's convention.
+        # return output, None, past_key_value
         return output, None

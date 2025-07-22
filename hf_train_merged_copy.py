@@ -17,31 +17,6 @@ def parse_config(path: str):
     with open(path) as f:
         return yaml.safe_load(f)
 
-
-def get_model_config_class(model_name: str):
-    """
-    Dynamically imports and returns the correct model config class
-    based on the model name.
-    """
-    
-    # Map model names to their full class import paths
-    MODEL_CONFIG_MAP = {
-        "qwen2": "lolcats.models.rapid_distill_stage_1_qwen.LigerQwen2GLAConfig",
-        "qwen3_gla": "lolcats.models.rapid_distill_qwen3_gla.LigerQwen3GLAConfig"
-        # Add other models here in the future
-        # "new_model": "path.to.new.ModelConfig"
-    }
-
-    if model_name not in MODEL_CONFIG_MAP:
-        raise ValueError(f"Unknown model name: {model_name}. Please add it to MODEL_CONFIG_MAP.")
-
-    # Dynamically import the module and get the class
-    module_path, class_name = MODEL_CONFIG_MAP[model_name].rsplit('.', 1)
-    module = importlib.import_module(module_path)
-    config_class = getattr(module, class_name)
-    
-    return config_class
-
 def get_student_attention_class(model_name: str):
     """
     Dynamically imports and returns the correct student attention class
@@ -49,8 +24,9 @@ def get_student_attention_class(model_name: str):
     """
     # Map model names to their student attention class import paths
     STUDENT_ATTENTION_MAP = {
-        "qwen2_gla": "student_only_attention.LigerQwen2GatedLinearAttentionStudent",
-        "qwen3_gla": "student_only_attention.LigerQwen3GatedLinearAttentionStudent"
+        "qwen2_liger_gla": "student_only_attention.LigerQwen2GatedLinearAttentionStudent",
+        "qwen3_liger_gla": "student_only_attention.LigerQwen3GatedLinearAttentionStudent",
+        "qwen2_gla": "student_only_attention.Qwen2GatedLinearAttentionStudent",
         # Add other attention layers for future models here
         # "new_model_attention_type": "path.to.new.AttentionStudent"
     }
@@ -118,6 +94,7 @@ def patch_model_for_stage1(model, base_model_cfg, cfg):
             idx
         )
         layer.self_attn = wrapper
+
 
 def build_student_for_stage1(cfg):
     """
@@ -348,7 +325,7 @@ def main(cfg):
         logging_steps               = 10,
         eval_strategy               = "steps" if cfg.data.val_set_size > 0 else "no",
         eval_steps                  = 50,
-        save_steps                  = 1000,
+        save_steps                  = 500,
         save_total_limit            = 10000,
         metric_for_best_model       = "loss",
         greater_is_better           = False,
