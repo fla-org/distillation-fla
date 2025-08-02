@@ -4,18 +4,28 @@ import torch.optim
 from transformers import get_scheduler
 import math
 from torch.optim.lr_scheduler import LambdaLR
+from transformers.utils import logging
 
 
-def get_optimizer_and_scheduler(model, config, total_steps):
-    params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr, betas=(0.9, 0.95), fused=True)
-    scheduler = get_scheduler(
-        config.train.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=0,
-        num_training_steps=total_steps,
-    )
-    return optimizer, scheduler
+def get_optimizer(model, config):
+    attn_params = []
+    other_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "attn" in name:
+            attn_params.append(param)
+            logging.info(f"Attn params: {name}, lr: {config.train.lr_attn}")
+        else:
+            other_params.append(param)
+            logging.info(f"Other params: {name}, lr: {config.train.lr}")
+    optimizer_grouped_parameters = [
+        {"params": attn_params, "lr": config.train.lr_attn},
+        {"params": other_params, "lr": config.train.lr},
+    ]
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, betas=(0.9, 0.95), fused=True)
+    return optimizer
+
 
 def count_model_params(model, requires_grad: bool = True):
     # code form lolcats
@@ -30,3 +40,4 @@ def count_model_params(model, requires_grad: bool = True):
         return sum([np.prod(p.size()) for p in model_parameters]).item()
     except:
         return sum([np.prod(p.size()) for p in model_parameters])
+

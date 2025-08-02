@@ -15,19 +15,44 @@ git clone --recurse-submodules https://github.com/fla-org/distillation-fla.git
 cd distillation-fla
 
 # Create and activate conda environment
-conda create -n your_env_name python=3.10
+conda create -n your_env_name python=3.12
 conda activate your_env_name
 
 # Install dependencies
 pip install -r requirements.txt
 pip install deepspeed==0.15.4
-pip install flash-attn --no-build-isolation
-
-# Install flash-linear-attention
-cd third_party/flash-linear-attention
-pip install -e .
-cd ../..
+pip install flash-linear-attention
 ```
+
+## Preprocess corpus
+
+```bash
+python preprocess_tokenize.py # tokenize the whole corpus
+python preprocess_chunk.py --context_length 512  #for stage1 and 2
+python preprocess_chunk.py --context_length 4096 # for stage3
+```
+
+
+
+
+## Teacher model
+
+We expect teacher model in FLA `transformer` formats. 
+
+## Convert DeepSpeed Checkpoint to HuggingFace Format
+
+During training, checkpoints are saved in DeepSpeed format. Before starting the next stage or running evaluation, you need to convert these checkpoints to HuggingFace format.
+
+Example command:
+```
+python convert_weight_to_hf.py --deepspeed_ckpt_path $path1 \
+    --student_attn_class_name gdn_v1 \
+    --hf_output_dir $path2 \
+    --keep_full_attention_layers []
+```
+
+
+
 
 ## Training: A Three-Stage Process
 
@@ -41,17 +66,40 @@ This initial stage focuses on aligning the attention outputs of the model.
 deepspeed hf_train_merged.py --cfg config_rad/rapid_distill_stage1_qwen.yaml
 ```
 
+After the first stage training, you need to convert the checkpoint's weight to a unified `StudentForCausalLM` model weight.
+The default setting (for ): 
+- Tokens: 100M 
+- Training length: 512
+- Peak learning rate: 1e-3
+- Scheduler: Cosine
+- Batch size: 96. 
+- Tokens per batch: 512*96~=50K
+
+
+
+
 ### Stage 2: Logits Distillation
 
 In the second stage, we perform knowledge distillation on the model's logits to transfer capabilities from a teacher model.
+
+First, we should convert the first stage's final checkpoint to HF format (see #convert-deepspeed-checkpoint-to-huggingface-format)
+ 
 
 ```bash
 deepspeed hf_train_merged.py --cfg config_rad/rapid_distill_stage2_qwen.yaml
 ```
 
+Recommended setting:
+- Tokens: 600M
+- Training length: 4096
+
+
+
 ### Stage 3: Continued Training on Longer Sequences
 
 The final stage involves continuing the training on longer sequence lengths to enhance the model's performance on extended contexts.
+
+Again, first, we should convert Stage2's checkpoint to HF format (see #convert-deepspeed-checkpoint-to-huggingface-format)
 
 ```bash
 deepspeed hf_train_merged.py --cfg config_rad/rapid_distill_stage3_qwen.yaml
@@ -66,16 +114,22 @@ cd third_party/lm-evaluation-harness
 pip install -e .
 ```
 
-Then, run the evaluation script. The example below shows how to evaluate a base model with a LoRA adapter.
+Again again, we should convert the checkpoint to HF formats (depending on which stage you wanna evaluate, see #convert-deepspeed-checkpoint-to-huggingface-format)
+
+Then, run the evaluation script. 
 
 ```bash
 python -m eval.harness --model hf \
-    --model_args pretrained=/your/checkpoints/base_model,peft=/your/checkpoints/lora_adapter_path \
-    --tasks piqa,arc_easy,arc_challenge,hellaswag,winogrande \
-    --batch_size 64 \
+    --model_args pretrained="fla-hub/Qwen2.5-7B-Instruct" \
+    --tasks hellaswag \
+    --batch_size 16 \
     --device cuda \
     --seed 0
 ```
+
+
+
+
 
 ## Acknowledgements
 
