@@ -1,6 +1,6 @@
 {
-  "train_micro_batch_size_per_gpu": "auto",
-  "gradient_accumulation_steps": "auto",
+  "train_micro_batch_size_per_gpu": 32,
+  "gradient_accumulation_steps": null,
   "zero_optimization": {
     "stage": 3,
     "stage3_gather_16bit_weights_on_model_save": true,
@@ -10,7 +10,6 @@
   "bf16": {
     "enabled": true
   },
-  "gradient_clipping": 1.0,
   "steps_per_print": 200,
   "wall_clock_breakdown": false
 }
