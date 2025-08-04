@@ -250,6 +250,7 @@ def main(cfg):
         trainer_class = KDTrainer
         ds_config_path = os.path.join(os.getcwd(), "ds_config_2.json")
 
+
     elif stage == 3:
         logger.info("==== Stage 3 (Long-Context Finetuning) ====")
         # Student is the checkpoint saved by stage 2
@@ -297,6 +298,13 @@ def main(cfg):
     seq_len   = cfg.train.train_seq_len
     tgt_tok   = cfg.train.target_tokens
     max_steps = (tgt_tok // (cfg.train.batch_size * seq_len)) if tgt_tok else cfg.train.max_steps
+    logger.info(f"gradient accumulation steps: {g_accum}")
+    logger.info(f"max steps: {max_steps}")
+    logger.info(f"batch size: {cfg.train.batch_size}")
+    logger.info(f"micro batch size: {cfg.train.micro_batch_size}")
+    logger.info(f"num gpus: {num_gpus}")
+    logger.info(f"target tokens: {cfg.train.target_tokens}")
+    logger.info(f"train seq len: {cfg.train.train_seq_len}")
 
     training_args = TrainingArguments(
         per_device_train_batch_size = cfg.train.micro_batch_size,
@@ -348,6 +356,7 @@ def main(cfg):
     
 
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg", required=True, help="Path to YAML config")
@@ -369,4 +378,3 @@ if __name__ == "__main__":
 
 
             
-

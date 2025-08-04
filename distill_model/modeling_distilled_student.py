@@ -6,21 +6,33 @@ from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
+import torch.nn.functional as F
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 from transformers.utils.deprecation import deprecate_kwarg
-if torch.cuda.is_available(): # strange workaround for FLA's import
+from distill_model.fused_kl_for_zero3 import fused_kl_div_loss
+
+if torch.cuda.is_available():  # strange workaround for FLA's import
     from fla.layers.attn import Attention
     from distill_model.config_distilled_student import StudentConfig
     from fla.models.utils import Cache
-    from fla.modules import FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss, FusedKLDivLoss
+    from fla.modules import FusedCrossEntropyLoss, FusedLinearCrossEntropyLoss
     from fla.modules import RMSNorm
     from fla.modules.l2warp import l2_warp
     from fla.modules.mlp import SwiGLULinear, swiglu
     from deepspeed.runtime.zero.partition_parameters import GatheredParameters
     import importlib
+
+import triton
+import triton.language as tl
+# New import for ZeRO-3 compatibility
+from fla.ops.utils.op import exp, log
+from fla.utils import input_guard, is_amd
+
+# from distill_model.fused_kl_for_zero3 import fused_kl_div_loss
+
 
 def get_student_attention_class(model_name: str):
     """
@@ -518,13 +530,7 @@ class StudentForCausalLM(StudentPreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             **kwargs
             )[0].view(-1, self.config.hidden_size)
-
-        criterion = FusedKLDivLoss()
-        with GatheredParameters([self.lm_head.weight, teacher.lm_head.weight], modifier_rank=None, enabled=True):
-            loss = criterion(output_student, output_teacher, self.lm_head.weight.data.clone(), teacher.lm_head.weight.data.clone())
+        
+        loss = fused_kl_div_loss(output_student, output_teacher, self.lm_head.weight, teacher.lm_head.weight)
         return loss
 
-
-        
-        
-        

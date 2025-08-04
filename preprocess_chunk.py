@@ -17,9 +17,10 @@ def parse_args():
     parser.add_argument(
         "--context_length",
         type=int,
-        default=4096,
+        default=16384,
         help="Context length for each chunk"
     )
+
     parser.add_argument(
         "--output_dir",
         type=str,
