@@ -15,6 +15,7 @@ import logging
 import sys
 import os
 
+
 def get_logger(name: str = None) -> logging.Logger:
     formatter = logging.Formatter(
         fmt="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S"

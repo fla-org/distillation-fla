@@ -7,23 +7,23 @@ teacher_model:
   name: 'fla-hub/Qwen2.5-3B-Instruct'
 
 student_model:
-  name: 'gla_v1'
+  name: 'gsa_v1'
   keep_full_attention_layers: []
 
 train:
   target_tokens: 250_000_000
-  batch_size: 96
-  micro_batch_size: 12
-  train_seq_len: 512
+  batch_size: 32
+  micro_batch_size: 2
+  train_seq_len: 4096
   lr_scheduler_type: constant
   lr: 0.00001 # all but attention layers
   lr_attn: 0.00001 # attention layers
   max_grad_norm: 1.0
-  output_dir: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gla_v1/stage2'
-  student_init_ckpt: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gla_v1/stage1/converted-hf'
-  max_length: 512
+  output_dir: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gsa_v1/stage3'
+  student_init_ckpt: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gsa_v1/stage2/converted-hf'
+  max_length: 4096
   # tokenizer
   add_eos_token: False
   resume_from_checkpoint: None
+stage: 3
 
-stage: 2

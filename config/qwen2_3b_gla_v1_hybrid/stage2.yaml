@@ -7,8 +7,8 @@ teacher_model:
   name: 'fla-hub/Qwen2.5-3B-Instruct'
 
 student_model:
-  name: 'gdn_v3'
-  keep_full_attention_layers: []
+  name: 'gla_v1'
+  keep_full_attention_layers: [0, 1, 5, 17, 18, 19, 20, 26, 27]
 
 train:
   target_tokens: 1000_000_000
@@ -20,11 +20,11 @@ train:
   lr_attn: 0.0001 # attention layers
 
   max_grad_norm: 1.0
-  output_dir: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gdn3/stage2'
-  student_init_ckpt: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gdn3/stage1/converted-hf'
+  output_dir: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gla_v1_hybrid/stage2'
+  student_init_ckpt: '/proj/checkpoints/songlin/outputs/qwen_3b_instruct_gla_v1_hybrid/stage1/converted-hf'
   max_length: 4096
   # tokenizer
   add_eos_token: False
-  resume_from_checkpoint: '/u/sonta/code/distillation-fla/checkpoints/qwen_3b_instruct_gdn3_hybrid/stage2/checkpoint-4577'
+  resume_from_checkpoint: '/u/sonta/code/distillation-fla/checkpoints/qwen_3b_instruct_gla_v1_hybrid/stage2/checkpoint-4577'
 
 stage: 2
